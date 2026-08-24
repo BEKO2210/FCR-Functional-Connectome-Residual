@@ -70,6 +70,7 @@ def test_rejects_missing_required_columns() -> None:
 
 def test_rejects_non_integer_c3_identity() -> None:
     frame = _frame()
+    frame["c3_rep_manual"] = frame["c3_rep_manual"].astype(float)
     frame.loc[0, "c3_rep_manual"] = 10.5
     with pytest.raises(ValueError, match="non-integer"):
         eligible_h01_neurons(frame)

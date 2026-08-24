@@ -77,12 +77,7 @@ def build_public_l23_candidate_data(
     *,
     max_nodes: int | None = None,
 ) -> PublicL23Data:
-    """Build a complete directed candidate graph from the public proofread subgraph.
-
-    Only nodes that occur as endpoints in the supplied proofread-synapse table and have
-    finite soma coordinates are retained. Every ordered non-self pair among those nodes
-    is represented exactly once; absent observed synapses are encoded as zero.
-    """
+    """Build a complete directed candidate graph from the public proofread subgraph."""
     _require_columns(
         soma,
         {"pt_root_id", "cell_type", "soma_x_nm", "soma_y_nm", "soma_z_nm"},
@@ -118,7 +113,6 @@ def build_public_l23_candidate_data(
         if max_nodes < 3:
             raise ValueError("max_nodes must be at least 3")
         node_frame = node_frame.head(max_nodes).copy()
-
     if len(node_frame) < 3:
         raise ValueError("fewer than three usable nodes remain after filtering")
 
@@ -149,7 +143,6 @@ def build_public_l23_candidate_data(
         dtype=np.int64,
         count=len(source),
     )
-
     if np.any(distance <= 0):
         raise ValueError("distinct exported nodes must have positive soma distance")
 
@@ -160,6 +153,8 @@ def build_public_l23_candidate_data(
         target_type=np.asarray([node_types[int(value)] for value in target], dtype=str),
         distance=distance,
         connected=(counts > 0).astype(np.int8),
+        source_xyz=source_xyz,
+        target_xyz=target_xyz,
     )
     coordinates = node_frame[["soma_x_nm", "soma_y_nm", "soma_z_nm"]].to_numpy(dtype=float)
     return PublicL23Data(

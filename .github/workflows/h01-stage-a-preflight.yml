@@ -1,0 +1,156 @@
+name: H01 Experiment 006 Stage A Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/h01-stage-a-preflight.yml"
+      - "src/fcr/data/h01_preflight.py"
+      - "experiments/006_h01_stage_a_preflight.py"
+      - "tests/test_h01_preflight.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: h01-experiment-006-stage-a
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Schema and storage metadata only
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR
+        run: python -m pip install -e .
+
+      - name: Download canonical H01 soma table only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/h01
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://storage.googleapis.com/h01-release/data/20210601/c3/tables/somas.csv" \
+            -o data/public/h01/somas.csv
+
+      - name: Run outcome-blind Stage A preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/006_h01_stage_a_preflight.py \
+            --soma data/public/h01/somas.csv \
+            --output results/h01_stage_a_preflight.json
+
+      - name: Enforce no-outcome guardrail
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/h01_stage_a_preflight.json").read_text())
+          if report.get("preregistration_issue") != 13:
+              raise SystemExit("wrong Experiment 006 preregistration issue")
+          if report.get("outcome_blind") is not True:
+              raise SystemExit("Stage A must be explicitly outcome blind")
+          if report.get("forbidden_metrics_computed") is not False:
+              raise SystemExit("Stage A reports a forbidden connectivity metric")
+          storage = report["connectivity_storage_metadata"]
+          if storage["crest_full_download_limit_bytes"] != 2 * 1024**3:
+              raise SystemExit("predeclared 2 GiB CREST threshold changed")
+          if storage["selected_source_for_stage_b"] not in {
+              "official-crest-sqlite",
+              "official-h01-sharded-json",
+          }:
+              raise SystemExit("unexpected Stage B source decision")
+          soma = report["soma"]
+          if soma["row_count"] <= 0 or not soma["columns"]:
+              raise SystemExit("H01 soma table schema is empty")
+          print("Stage A no-outcome guardrail passed.")
+          PY
+
+      - name: Build audit comment
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/h01_stage_a_preflight.json").read_text())
+          soma = report["soma"]
+          storage = report["connectivity_storage_metadata"]
+          shards = storage["h01_synapse_prefix"]
+          crest = storage["crest"]
+
+          lines = [
+              "## Experiment 006 Stage A — outcome-blind H01 preflight",
+              "",
+              "**No synapse/edge content was opened and no connectivity statistic was computed.**",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Soma rows: `{soma['row_count']}`",
+              f"- Soma file bytes: `{soma['bytes']}`",
+              f"- Soma SHA-256: `{soma['sha256']}`",
+              f"- Soma columns: `{', '.join(soma['columns'])}`",
+              f"- ID-like columns: `{', '.join(soma['id_candidates']) or 'none detected'}`",
+              f"- Coordinate-like columns: `{', '.join(soma['coordinate_candidates']) or 'none detected'}`",
+              f"- Label-like columns: `{', '.join(soma['label_candidates']) or 'none detected'}`",
+              "",
+              "### Connectivity storage metadata only",
+              f"- Official H01 synapse shard objects: `{shards['object_count']}`",
+              f"- Total shard bytes: `{shards['total_bytes']}`",
+              f"- Smallest shard bytes: `{shards['min_object_bytes']}`",
+              f"- Largest shard bytes: `{shards['max_object_bytes']}`",
+              f"- CREST object available: `{crest.get('available')}`",
+              f"- CREST Content-Length: `{crest.get('content_length')}`",
+              f"- Frozen full-download limit: `{storage['crest_full_download_limit_bytes']}` bytes (2 GiB)",
+              f"- Stage B source selected from storage feasibility only: `{storage['selected_source_for_stage_b']}`",
+              "",
+              "Full soma schema/null/coordinate/label metadata and per-shard names/sizes are in the Actions artifact. No H01 edge outcomes were inspected.",
+          ]
+          comment = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(comment, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(comment)
+          print(comment)
+          PY
+
+      - name: Publish Stage A result to Issue 13
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('run-comment.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 13,
+              body,
+            });
+
+      - name: Upload Stage A audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h01-experiment-006-stage-a-${{ github.run_id }}
+          path: |
+            results/h01_stage_a_preflight.json
+            run-comment.md
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

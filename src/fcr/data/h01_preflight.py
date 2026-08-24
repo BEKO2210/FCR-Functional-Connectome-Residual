@@ -13,7 +13,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-
 _COORDINATE_TOKENS = {"x", "y", "z"}
 _LABEL_TOKENS = ("type", "class", "label", "region")
 _ID_TOKENS = ("id", "seg", "root", "neuron", "cell")

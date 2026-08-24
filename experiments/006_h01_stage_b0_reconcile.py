@@ -28,7 +28,6 @@ def _identity_stats(frame: pd.DataFrame, column: str, neuron_mask: pd.Series) ->
 
     neuron_counts = neuron_values.value_counts()
     all_counts = values[finite].value_counts()
-
     neuron_exactly_once_mask = neuron_values.map(neuron_counts) == 1
     global_exactly_once_mask = neuron_values.map(all_counts) == 1
 
@@ -44,9 +43,6 @@ def _identity_stats(frame: pd.DataFrame, column: str, neuron_mask: pd.Series) ->
         "extra_neuron_rows_beyond_unique_ids": int(len(neuron_values) - neuron_values.nunique()),
         "neuron_ids_with_multiple_neuron_rows": int((neuron_counts > 1).sum()),
         "neuron_rows_in_multi_neuron_id_groups": int(neuron_counts[neuron_counts > 1].sum()),
-        "neuron_ids_colliding_with_non_neuron_soma_rows": int(
-            len(set(neuron_values.unique()) - set(all_counts[all_counts == neuron_counts.reindex(all_counts.index)].index))
-        ),
     }
 
 

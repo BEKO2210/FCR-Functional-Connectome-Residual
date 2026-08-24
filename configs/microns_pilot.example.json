@@ -1,0 +1,33 @@
+{
+  "experiment_id": "microns-structural-pilot-v1",
+  "evidence_level": "E2",
+  "dataset": {
+    "name": "MICrONS cortical mm3",
+    "materialization_version_or_timestamp": "REQUIRED_BEFORE_RUN",
+    "bounding_box_nm": "REQUIRED_BEFORE_RUN",
+    "query_commit_sha": "AUTO_RECORD"
+  },
+  "inclusion": {
+    "cell_status": "DEFINE_BEFORE_RUN",
+    "proofreading_rule": "DEFINE_BEFORE_RUN",
+    "candidate_negative_rule": "DEFINE_BEFORE_RUN",
+    "minimum_synapse_count_for_connected": 1
+  },
+  "split": {
+    "strategy": "spatially_disjoint_contiguous_blocks",
+    "train_fraction": 0.7,
+    "validation_fraction": 0.15,
+    "test_fraction": 0.15
+  },
+  "primary_metric": "held_out_two_part_bits_per_candidate_pair",
+  "baselines": [
+    "global",
+    "distance",
+    "type-pair",
+    "type+distance",
+    "degree-aware",
+    "stochastic-block",
+    "publication-grade-mdl-or-prequential"
+  ],
+  "kill_rule": "No central compression claim if gains vanish on spatial holdout, after model cost, or under defensible negative-set sensitivity checks."
+}

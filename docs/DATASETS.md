@@ -15,7 +15,7 @@ The public documentation reports roughly 200,000 cells, about 75,000 neurons wit
 
 Do **not** download the full imagery/segmentation for the first experiments. Query bounded structural tables and derived properties. Pin a materialization version or timestamp because annotations and proofreading continue to change.
 
-A future MICrONS adapter must require an explicit version/timestamp in configuration; `latest` must not be accepted for frozen experiments.
+The implemented MICrONS adapter requires an explicit version in configuration; `latest` is not accepted for frozen experiments.
 
 ### Minimal first real-data slice
 
@@ -36,6 +36,12 @@ spatial_block
 ```
 
 Functional properties are joined only after the structural analysis configuration is frozen.
+
+### Implemented plumbing adapter
+
+The `fcr microns-export` command performs a deliberately bounded query through CAVEclient. It requires an explicit materialization version, defaults to `axon_fully_extended`, uses `desired_resolution=[1,1,1]` so candidate-pair distances are stored in nanometers, and never accepts a token argument.
+
+The initial deterministic root-ID-limited selection is an E0 plumbing test only. See `docs/MICRONS_RUNBOOK.md` before running it.
 
 ## H01 — later human structural target
 

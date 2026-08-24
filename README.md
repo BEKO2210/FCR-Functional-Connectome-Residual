@@ -59,6 +59,19 @@ python experiments/003_rate_distortion.py
 
 Experiments 001–003 use synthetic data only. They validate the machinery; they **cannot** establish a biological result.
 
+## MICrONS live adapter
+
+FCR includes a version-pinned MICrONS export path. Live access is optional and never handles token values itself. Install the optional dependency and configure CAVE authentication locally using the official MICrONS instructions.
+
+```bash
+python -m pip install -e '.[dev,microns]'
+fcr microns-export --version 1822 --max-nodes 100 --output data/cache/microns_v1822_pilot_100.npz
+```
+
+The default selection accepts only `axon_fully_extended` neurons, requires dendrite proofreading status, rejects stale `valid_id` mappings, requests positions in nanometers, aggregates multiple synapses per directed pair, and writes a compressed NPZ plus provenance JSON. The deterministic root-ID limit is **plumbing only**, not a scientific sampling design.
+
+See [`docs/MICRONS_RUNBOOK.md`](docs/MICRONS_RUNBOOK.md).
+
 ## Real-data plan
 
 The first target is **MICrONS**, because it combines dense synaptic structure with matched functional measurements. The public resource reports roughly 200,000 cells, 75,000 neurons with physiology, and 523 million synapses. FCR will query bounded subsets and pin a materialization version rather than download the full dataset.

@@ -229,7 +229,7 @@ def save_microns_export(
 
     node_df = normalize_nodes(nodes)
     node_strategy = (
-        node_df["strategy_axon"].astype(str).to_numpy()
+        node_df["strategy_axon"].fillna("unknown").astype(str).to_numpy(dtype=str)
         if "strategy_axon" in node_df.columns
         else np.full(len(node_df), "unknown", dtype=str)
     )

@@ -11,6 +11,18 @@ from .synthetic import generate_synthetic_connectome, train_test_split
 
 
 def _add_microns_parsers(subparsers: argparse._SubParsersAction) -> None:
+    doctor = subparsers.add_parser(
+        "microns-doctor",
+        help="run bounded credential-safe preflight checks for MICrONS live access",
+    )
+    doctor.add_argument("--version", type=int, required=True)
+    doctor.add_argument(
+        "--strategy",
+        action="append",
+        dest="strategies",
+        help="axon proofreading strategy; repeat to allow multiple (default: axon_fully_extended)",
+    )
+
     microns = subparsers.add_parser(
         "microns-export",
         help="query a small version-pinned MICrONS pilot and export candidate pairs",
@@ -31,6 +43,10 @@ def _add_microns_parsers(subparsers: argparse._SubParsersAction) -> None:
         help="verify MICrONS NPZ structure, geometry, counts, and provenance SHA-256",
     )
     validate.add_argument("input")
+
+
+def _strategies(args: argparse.Namespace) -> tuple[str, ...]:
+    return tuple(args.strategies) if args.strategies else ("axon_fully_extended",)
 
 
 def main() -> None:
@@ -59,15 +75,26 @@ def main() -> None:
         print(json.dumps([asdict(r) for r in results], indent=2))
         return
 
+    if args.command == "microns-doctor":
+        from .data.microns import MICrONSConfig
+        from .data.microns_doctor import run_microns_doctor
+
+        config = MICrONSConfig(
+            materialization_version=args.version,
+            max_nodes=2,
+            proofread_strategies=_strategies(args),
+        )
+        print(json.dumps(run_microns_doctor(config), indent=2))
+        return
+
     if args.command == "microns-export":
         from .data.microns import MICrONSConfig, export_microns_pilot
 
-        strategies = tuple(args.strategies) if args.strategies else ("axon_fully_extended",)
         config = MICrONSConfig(
             materialization_version=args.version,
             max_nodes=args.max_nodes,
             max_candidate_pairs=args.max_candidate_pairs,
-            proofread_strategies=strategies,
+            proofread_strategies=_strategies(args),
         )
         npz_path, provenance_path = export_microns_pilot(config, args.output)
         print(f"wrote {npz_path}")

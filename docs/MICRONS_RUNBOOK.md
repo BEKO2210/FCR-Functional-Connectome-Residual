@@ -34,11 +34,30 @@ Follow the official setup:
 
 The official CAVEclient flow stores the token in its local credential store. FCR intentionally has no `--token` option and never serializes authentication data.
 
+## Mandatory preflight
+
+Before any export, run the bounded read-only doctor check:
+
+```bash
+fcr microns-doctor --version 1822
+```
+
+The doctor verifies that:
+
+- the requested materialization version exists;
+- the proofreading, cell-type and configured synapse tables are present;
+- the proofreading schema contains every field required by the strict filters;
+- the cell-type schema exposes `pt_root_id` and `cell_type`;
+- a one-row synapse probe can be executed;
+- the materialization timestamp can be read.
+
+The doctor uses at most five proofreading rows, one cell-type row and one synapse row. Its JSON result contains no authentication state or credential values. Do not continue if `"ok": true` is not returned.
+
 ## First safe plumbing run
 
 The initial adapter validation target is materialization **1822**. Versions are never selected implicitly.
 
-Start small:
+After the doctor passes, start small:
 
 ```bash
 fcr microns-export \
@@ -96,7 +115,7 @@ For exactly 100 valid nodes, the candidate graph must contain **9,900** directed
 
 ## Scale-up plumbing run
 
-Only after the 100-node export passes `microns-validate`:
+Only after the doctor and the 100-node export both pass:
 
 ```bash
 fcr microns-export \

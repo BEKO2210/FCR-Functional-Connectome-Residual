@@ -1,0 +1,178 @@
+name: MICrONS E0 Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      materialization_version:
+        description: Pinned MICrONS materialization version
+        required: true
+        default: "1822"
+        type: string
+      max_nodes:
+        description: Pilot size (run 100 before 500)
+        required: true
+        default: "100"
+        type: choice
+        options:
+          - "100"
+          - "500"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: microns-e0-pilot
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    name: Doctor, export, validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FCR_MATERIALIZATION_VERSION: ${{ inputs.materialization_version }}
+      FCR_MAX_NODES: ${{ inputs.max_nodes }}
+      FCR_OUTPUT: data/cache/microns_v${{ inputs.materialization_version }}_pilot_${{ inputs.max_nodes }}.npz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR with MICrONS support
+        run: python -m pip install -e '.[microns]'
+
+      - name: Require CAVE token secret
+        env:
+          CAVE_TOKEN: ${{ secrets.CAVE_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${CAVE_TOKEN:-}" ]; then
+            echo "::error::Repository secret CAVE_TOKEN is not configured. Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Configure ephemeral CAVE credential
+        env:
+          CAVE_TOKEN: ${{ secrets.CAVE_TOKEN }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          token = os.environ.get("CAVE_TOKEN", "")
+          if not token:
+              raise SystemExit("CAVE_TOKEN is empty")
+
+          target = Path.home() / ".cloudvolume" / "secrets" / "cave-secret.json"
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_text(json.dumps({"token": token}), encoding="utf-8")
+          target.chmod(0o600)
+          print(f"Configured ephemeral CAVE credential at {target} (token not printed).")
+          PY
+
+      - name: MICrONS doctor
+        shell: bash
+        run: |
+          fcr microns-doctor --version "$FCR_MATERIALIZATION_VERSION" > doctor.json
+          cat doctor.json
+          python - <<'PY'
+          import json
+          report = json.load(open("doctor.json", encoding="utf-8"))
+          if report.get("ok") is not True:
+              raise SystemExit("MICrONS doctor did not return ok=true")
+          PY
+
+      - name: Export bounded MICrONS pilot
+        shell: bash
+        run: |
+          start_epoch="$(date +%s)"
+          fcr microns-export \
+            --version "$FCR_MATERIALIZATION_VERSION" \
+            --max-nodes "$FCR_MAX_NODES" \
+            --output "$FCR_OUTPUT"
+          end_epoch="$(date +%s)"
+          echo "$((end_epoch - start_epoch))" > export_runtime_seconds.txt
+
+      - name: Validate export independently
+        shell: bash
+        run: |
+          fcr microns-validate "$FCR_OUTPUT" > validation.json
+          cat validation.json
+          python - <<'PY'
+          import json
+          report = json.load(open("validation.json", encoding="utf-8"))
+          if report.get("valid") is not True:
+              raise SystemExit("MICrONS validator did not return valid=true")
+          PY
+
+      - name: Build run summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          doctor = json.loads(Path("doctor.json").read_text(encoding="utf-8"))
+          validation = json.loads(Path("validation.json").read_text(encoding="utf-8"))
+          runtime = int(Path("export_runtime_seconds.txt").read_text().strip())
+
+          summary = {
+              "evidence_level": "E0-data-plumbing",
+              "github_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "github_sha": os.environ.get("GITHUB_SHA"),
+              "materialization_version": validation.get("materialization_version"),
+              "materialization_timestamp": doctor.get("materialization_timestamp"),
+              "caveclient_version": doctor.get("caveclient_version"),
+              "node_count": validation.get("node_count"),
+              "candidate_pair_count": validation.get("candidate_pair_count"),
+              "connected_pair_count": validation.get("connected_pair_count"),
+              "synapse_count_total": validation.get("synapse_count_total"),
+              "npz_sha256": validation.get("npz_sha256"),
+              "export_runtime_seconds": runtime,
+          }
+          Path("run-summary.json").write_text(
+              json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+          )
+
+          step_summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          with step_summary.open("a", encoding="utf-8") as handle:
+              handle.write("# MICrONS E0 Pilot\n\n")
+              handle.write("**Evidence level:** E0 data plumbing only — no biological claim.\n\n")
+              handle.write(f"- Materialization: `{summary['materialization_version']}`\n")
+              handle.write(f"- Nodes: `{summary['node_count']}`\n")
+              handle.write(f"- Directed candidate pairs: `{summary['candidate_pair_count']}`\n")
+              handle.write(f"- Connected pairs: `{summary['connected_pair_count']}`\n")
+              handle.write(f"- Total observed synapses: `{summary['synapse_count_total']}`\n")
+              handle.write(f"- Export runtime: `{runtime}s`\n")
+              handle.write(f"- NPZ SHA-256: `{summary['npz_sha256']}`\n")
+          PY
+          cat run-summary.json
+
+      - name: Upload validated research artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: microns-e0-v${{ inputs.materialization_version }}-n${{ inputs.max_nodes }}-${{ github.run_id }}
+          path: |
+            ${{ env.FCR_OUTPUT }}
+            data/cache/*.provenance.json
+            doctor.json
+            validation.json
+            run-summary.json
+            export_runtime_seconds.txt
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6
+
+      - name: Remove ephemeral CAVE credential
+        if: always()
+        shell: bash
+        run: rm -f "$HOME/.cloudvolume/secrets/cave-secret.json"

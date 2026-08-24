@@ -33,6 +33,10 @@ def test_builds_complete_directed_nonself_candidate_graph() -> None:
     assert int(data.sample.connected.sum()) == 3
     assert int(data.synapse_count.sum()) == 4
     assert not np.any(data.sample.source == data.sample.target)
+    assert data.sample.source_xyz is not None
+    assert data.sample.target_xyz is not None
+    assert data.sample.source_xyz.shape == (12, 3)
+    assert data.sample.target_xyz.shape == (12, 3)
 
     pair_to_count = {
         (int(source), int(target)): int(count)
@@ -60,6 +64,8 @@ def test_normalises_types_and_uses_soma_distance() -> None:
     assert data.sample.source_type[index] == "excitatory"
     assert data.sample.target_type[index] == "inhibitory"
     assert data.sample.distance[index] == pytest.approx(5.0)
+    assert np.allclose(data.sample.source_xyz[index], [0.0, 0.0, 0.0])
+    assert np.allclose(data.sample.target_xyz[index], [3.0, 4.0, 0.0])
 
 
 def test_rejects_ambiguous_endpoint_column_detection() -> None:

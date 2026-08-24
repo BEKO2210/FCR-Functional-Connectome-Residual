@@ -1,0 +1,195 @@
+name: FCR Experiment 005 Nested Spatial CV
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-005.yml"
+      - "src/fcr/schema.py"
+      - "src/fcr/advanced_models.py"
+      - "src/fcr/nested_cv.py"
+      - "src/fcr/data/microns_public_l23.py"
+      - "experiments/005_nested_spatial_cv.py"
+      - "tests/test_advanced_models.py"
+      - "tests/test_nested_cv.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: fcr-experiment-005
+  cancel-in-progress: false
+
+jobs:
+  experiment-005:
+    name: Download, verify, nested-CV, report
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR
+        run: python -m pip install -e .
+
+      - name: Download frozen MICrONS public inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/microns_l23
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_valence_v185.csv?download=1" \
+            -o data/public/microns_l23/soma_valence_v185.csv
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_subgraph_synapses_spines_v185.csv?download=1" \
+            -o data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv
+
+      - name: Verify preregistered MD5 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd data/public/microns_l23
+          printf '%s  %s\n' \
+            'b7c349b1ecbdad46185bb98d88b96d20' 'soma_valence_v185.csv' \
+            '5bbb8ff59dcad4ccea6d46930920cd04' 'soma_subgraph_synapses_spines_v185.csv' \
+            > checksums.md5
+          md5sum --check checksums.md5
+
+      - name: Run Experiment 005
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/005_nested_spatial_cv.py \
+            --soma data/public/microns_l23/soma_valence_v185.csv \
+            --synapses data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv \
+            --output results/experiment_005.json
+
+      - name: Enforce protocol invariants
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_005.json").read_text())
+          evaluation = report["evaluation"]
+          folds = evaluation["folds"]
+          if report["preregistration_issue"] != 11:
+              raise SystemExit("wrong preregistration issue")
+          if len(folds) != 5:
+              raise SystemExit("Experiment 005 must contain exactly five outer folds")
+          seen = set()
+          for fold in folds:
+              ids = set(fold["test_node_ids"])
+              if seen & ids:
+                  raise SystemExit("outer test node leakage detected")
+              seen |= ids
+              n = fold["test_node_count"]
+              if fold["test_pairs"] != n * (n - 1):
+                  raise SystemExit("outer fold is not a complete directed non-self graph")
+              if fold["test_positive_pairs"] <= 0:
+                  raise SystemExit("outer fold contains no positives")
+              if set(fold["predictive"]) != {"global", "distance", "relative", "spatial"}:
+                  raise SystemExit("unexpected predictive model set")
+              for model in fold["predictive"].values():
+                  if not model["converged"]:
+                      raise SystemExit("predictive optimizer did not converge")
+          if len(seen) != report["graph"]["nodes"]:
+              raise SystemExit("outer test slabs do not cover all nodes exactly once")
+          primary = evaluation["primary"]
+          if primary["threshold_reduction"] != 0.05 or primary["threshold_wins"] != 4:
+              raise SystemExit("preregistered success threshold changed")
+          print("Experiment 005 protocol invariants passed.")
+          PY
+
+      - name: Build audit summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_005.json").read_text())
+          ev = report["evaluation"]
+          primary = ev["primary"]
+          aggregate = ev["aggregate"]
+          oracle_residual = sum(f["degree_oracle"]["residual_bits"] for f in ev["folds"])
+          oracle_side = sum(f["degree_oracle"]["degree_side_bits"] for f in ev["folds"])
+          oracle_total = sum(f["degree_oracle"]["total_bits"] for f in ev["folds"])
+
+          lines = [
+              "## Experiment 005 verified GitHub Actions result",
+              "",
+              "**Evidence:** `E1-development-nested-spatial-cv` — development only, not independent confirmation.",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Nodes: `{report['graph']['nodes']}`",
+              f"- Candidate pairs: `{report['graph']['directed_candidate_pairs']}`",
+              f"- Best non-global family: `{primary['best_non_global_family']}`",
+              f"- Residual reduction vs global: `{100 * primary['residual_reduction_vs_global']:.3f}%`",
+              f"- Outer-fold wins vs global: `{primary['wins_vs_global']}/5`",
+              f"- Preregistered criterion met: `{primary['criterion_met']}`",
+              "",
+              "| Model | Aggregate residual bits | Aggregate two-part bits | Reduction vs global | Wins |",
+              "|---|---:|---:|---:|---:|",
+          ]
+          for name in ("global", "distance", "relative", "spatial"):
+              row = aggregate[name]
+              lines.append(
+                  f"| {name} | {row['residual_bits']:.3f} | {row['two_part_bits']:.3f} | "
+                  f"{100 * row['residual_reduction_vs_global']:.3f}% | {row['wins_vs_global']}/5 |"
+              )
+          lines.extend(
+              [
+                  "",
+                  "### Oracle degree diagnostic (not eligible for success criterion)",
+                  f"- Residual bits: `{oracle_residual:.3f}`",
+                  f"- Charged degree side-information: `{oracle_side}` bits",
+                  f"- Total: `{oracle_total:.3f}` bits",
+                  "",
+                  "Input files passed the frozen Zenodo MD5 checks before analysis. Full fold IDs, inner-CV scores, hyperparameters and hashes are in the Actions artifact.",
+              ]
+          )
+          comment = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(comment, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as out:
+              out.write(comment)
+          print(comment)
+          PY
+
+      - name: Publish result to preregistration issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('run-comment.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 11,
+              body,
+            });
+
+      - name: Upload Experiment 005 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-005-${{ github.run_id }}
+          path: |
+            results/experiment_005.json
+            run-comment.md
+            data/public/microns_l23/checksums.md5
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

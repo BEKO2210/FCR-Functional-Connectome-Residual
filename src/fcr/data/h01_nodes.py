@@ -2,7 +2,7 @@
 
 This module intentionally contains no H01 synapse or edge parser. It freezes the
 eligible human-neuron population and the central 1,500-node confirmation subset
-using only the canonical H01 soma table, as preregistered in Issue #13.
+using only the canonical H01 soma table, as preregistered and reconciled in Issue #13.
 """
 
 from __future__ import annotations
@@ -45,11 +45,14 @@ def _require_columns(frame: pd.DataFrame) -> None:
 
 
 def eligible_h01_neurons(frame: pd.DataFrame) -> pd.DataFrame:
-    """Return neuron-labeled, finite, single-soma C3 identities only.
+    """Return finite H01 neurons with exactly one neuron-labeled soma per C3 ID.
 
-    Single-soma uniqueness is evaluated across the complete soma table rather
-    than within neuron labels only, so any C3 identity associated with multiple
-    soma annotations is excluded as a possible merge error.
+    The published H01 construction's 15,730 count is reproduced when single-soma
+    uniqueness is evaluated among the frozen neuron-labeled soma rows. A glial or
+    other non-neuronal soma annotation sharing the same C3 object does not turn a
+    neuron into a multi-soma neuron; multiple neuron-labeled somas for the same C3
+    identity do. This interpretation was reconciled outcome-blind in Issue #13
+    before any Experiment 006 edge access.
     """
     _require_columns(frame)
     work = frame[[C3_ID_COLUMN, "celltype", "layer", *XYZ_COLUMNS]].copy()
@@ -58,11 +61,15 @@ def eligible_h01_neurons(frame: pd.DataFrame) -> pd.DataFrame:
         work[column] = pd.to_numeric(work[column], errors="coerce")
 
     finite_identity = work[C3_ID_COLUMN].notna() & np.isfinite(work[C3_ID_COLUMN])
-    identity_values = work.loc[finite_identity, C3_ID_COLUMN]
-    identity_counts = identity_values.value_counts(dropna=False)
-    single_soma_ids = set(identity_counts[identity_counts == 1].index.tolist())
-
     celltypes = work["celltype"].fillna("").astype(str).str.strip().str.upper()
+    neuron_label = celltypes.isin(NEURON_CELLTYPES)
+
+    neuron_identity_values = work.loc[finite_identity & neuron_label, C3_ID_COLUMN]
+    neuron_identity_counts = neuron_identity_values.value_counts(dropna=False)
+    single_neuron_soma_ids = set(
+        neuron_identity_counts[neuron_identity_counts == 1].index.tolist()
+    )
+
     finite_xyz = np.ones(len(work), dtype=bool)
     for column in XYZ_COLUMNS:
         finite_xyz &= work[column].notna().to_numpy()
@@ -71,8 +78,8 @@ def eligible_h01_neurons(frame: pd.DataFrame) -> pd.DataFrame:
     mask = (
         finite_identity.to_numpy()
         & finite_xyz
-        & celltypes.isin(NEURON_CELLTYPES).to_numpy()
-        & work[C3_ID_COLUMN].isin(single_soma_ids).to_numpy()
+        & neuron_label.to_numpy()
+        & work[C3_ID_COLUMN].isin(single_neuron_soma_ids).to_numpy()
     )
     selected = work.loc[mask].copy()
     selected["celltype"] = celltypes.loc[mask].to_numpy()
@@ -139,6 +146,7 @@ def freeze_h01_nodes(
         "eligible_neurons": int(len(eligible)),
         "primary_nodes": int(len(primary)),
         "c3_id_column": C3_ID_COLUMN,
+        "single_soma_scope": "within frozen neuron-labeled soma rows",
         "neuron_celltypes": sorted(NEURON_CELLTYPES),
         "coordinate_columns": list(XYZ_COLUMNS),
         "voxel_nm": VOXEL_NM.tolist(),

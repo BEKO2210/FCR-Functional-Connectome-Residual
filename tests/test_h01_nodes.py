@@ -29,18 +29,36 @@ def _frame() -> pd.DataFrame:
     )
 
 
-def test_eligible_neurons_use_neuron_labels_and_global_single_soma_identity() -> None:
+def test_non_neuronal_soma_with_same_c3_does_not_disqualify_neuron() -> None:
     result = eligible_h01_neurons(_frame())
 
-    # C3 id 30 is excluded even though one of its two soma rows is neuronal,
-    # because the identity has two soma annotations in the complete table.
-    assert result["c3_rep_manual"].tolist() == [20, 10, 50, 70]
+    # C3 id 30 has one neuronal soma and one astrocyte soma. The reconciled
+    # published rule counts neuron-labeled somas, so the neuron remains eligible.
+    assert result["c3_rep_manual"].tolist() == [20, 30, 10, 50, 70]
     assert set(result["celltype"]) == {
         "PYRAMIDAL",
         "INTERNEURON",
         "SPINY_STELLATE",
         "UNCLASSIFIED_NEURON",
     }
+
+
+def test_multiple_neuron_labeled_somas_for_same_c3_are_excluded() -> None:
+    frame = _frame()
+    duplicate_neuron = pd.DataFrame(
+        {
+            "c3_rep_manual": [20],
+            "celltype": ["PYRAMIDAL"],
+            "layer": ["L3"],
+            "x": [9],
+            "y": [9],
+            "z": [9],
+        }
+    )
+    frame = pd.concat([frame, duplicate_neuron], ignore_index=True)
+
+    result = eligible_h01_neurons(frame)
+    assert 20 not in set(result["c3_rep_manual"])
 
 
 def test_coordinate_conversion_uses_frozen_h01_voxel_scale() -> None:

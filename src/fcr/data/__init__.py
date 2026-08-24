@@ -6,6 +6,7 @@ from .microns import (
     query_microns_pilot,
     validate_microns_export,
 )
+from .microns_doctor import run_microns_doctor
 from .microns_transform import MICrONSCandidateData, build_candidate_data
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "build_candidate_data",
     "export_microns_pilot",
     "query_microns_pilot",
+    "run_microns_doctor",
     "validate_microns_export",
 ]

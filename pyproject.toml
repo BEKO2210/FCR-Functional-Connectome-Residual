@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fcr-connectome"
+version = "0.1.0"
+description = "Research toolkit for Functional Connectome Residual experiments"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.9",
+]
+
+[project.scripts]
+fcr = "fcr.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fcr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

@@ -1,0 +1,91 @@
+name: H01 Experiment 006 Stage B1 Schema Probe
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/h01-stage-b1-schema-probe.yml"
+      - "src/fcr/data/h01_edges.py"
+      - "experiments/006_h01_stage_b1_schema_probe.py"
+      - "tests/test_h01_schema_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: h01-experiment-006-stage-b1-schema-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  schema-probe:
+    name: Probe one bounded H01 shard prefix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR
+        run: python -m pip install -e .
+
+      - name: Download only first 2 MiB of official shard zero
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/h01 results
+          curl --fail --location --retry 5 --retry-all-errors \
+            --range 0-2097151 \
+            --max-filesize 4194304 \
+            "https://storage.googleapis.com/h01-release/data/20210601/c3/synapses/exported/json/export000000000000.json" \
+            -o data/public/h01/shard000_prefix.json
+          bytes=$(wc -c < data/public/h01/shard000_prefix.json)
+          if [ "$bytes" -gt 2097152 ]; then
+            echo "bounded range guard failed: ${bytes} bytes" >&2
+            exit 1
+          fi
+          echo "Downloaded bounded schema prefix: ${bytes} bytes"
+
+      - name: Emit value-redacted schema only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/006_h01_stage_b1_schema_probe.py \
+            --input data/public/h01/shard000_prefix.json \
+            --output results/h01_stage_b1_schema_probe.json
+
+      - name: Enforce schema-only boundary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/h01_stage_b1_schema_probe.json").read_text())
+          if report["required_identity_paths_present"] is not True:
+              raise SystemExit("required H01 identity paths are absent")
+          if report["values_emitted"] is not False:
+              raise SystemExit("schema probe emitted source values")
+          if report["connectivity_metrics_computed"] is not False:
+              raise SystemExit("schema probe computed connectivity metrics")
+          if report["model_metrics_computed"] is not False:
+              raise SystemExit("schema probe computed model metrics")
+          if report["source_format"] not in {"jsonl", "json-array", "json-object"}:
+              raise SystemExit("unsupported H01 JSON source format")
+          print("H01 Stage B1 bounded schema guard passed.")
+          PY
+
+      - name: Upload schema-only audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h01-experiment-006-stage-b1-schema-${{ github.run_id }}
+          path: results/h01_stage_b1_schema_probe.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6

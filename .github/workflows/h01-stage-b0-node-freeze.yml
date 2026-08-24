@@ -1,0 +1,140 @@
+name: H01 Experiment 006 Stage B0 Node Freeze
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/h01-stage-b0-node-freeze.yml"
+      - "src/fcr/data/h01_nodes.py"
+      - "experiments/006_h01_stage_b0_node_freeze.py"
+      - "tests/test_h01_nodes.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: h01-experiment-006-stage-b0
+  cancel-in-progress: false
+
+jobs:
+  freeze-nodes:
+    name: Freeze 1,500 H01 nodes without connectivity
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR
+        run: python -m pip install -e .
+
+      - name: Download canonical H01 soma table only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/h01
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://storage.googleapis.com/h01-release/data/20210601/c3/tables/somas.csv" \
+            -o data/public/h01/somas.csv
+          echo "cc38c8670bbeb3d61f58af44a529392111a59196ca0b9e0f74849b0afe1ffaff  data/public/h01/somas.csv" | sha256sum --check
+
+      - name: Freeze metadata-only H01 node set
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/006_h01_stage_b0_node_freeze.py \
+            --soma data/public/h01/somas.csv \
+            --selected-csv results/h01_experiment_006_primary_nodes.csv \
+            --report results/h01_stage_b0_node_freeze.json
+
+      - name: Enforce frozen node invariants
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/h01_stage_b0_node_freeze.json").read_text())
+          if report["eligible_neurons"] != 15730:
+              raise SystemExit(f"eligible count mismatch: {report['eligible_neurons']}")
+          if report["primary_nodes"] != 1500:
+              raise SystemExit(f"primary node count mismatch: {report['primary_nodes']}")
+          if report["edge_content_accessed"] is not False:
+              raise SystemExit("Stage B0 must not access H01 edge content")
+          if report["connectivity_accessed"] is not False:
+              raise SystemExit("node selection reports connectivity access")
+          if report["voxel_nm"] != [8, 8, 33]:
+              raise SystemExit("frozen H01 voxel scale changed")
+          if report["c3_id_column"] != "c3_rep_manual":
+              raise SystemExit("frozen C3 identity mapping changed")
+          print("H01 Stage B0 node invariants passed.")
+          PY
+
+      - name: Build node-freeze audit comment
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/h01_stage_b0_node_freeze.json").read_text())
+          lines = [
+              "## Experiment 006 Stage B0 — H01 node set frozen",
+              "",
+              "**No H01 synapse/edge content was opened.**",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Canonical soma SHA-256: `{report['soma_sha256']}`",
+              f"- Eligible single-soma neurons: `{report['eligible_neurons']}`",
+              f"- Frozen primary nodes: `{report['primary_nodes']}`",
+              f"- C3 identity: `{report['c3_id_column']}`",
+              f"- Physical voxel scale: `{report['voxel_nm']}` nm",
+              f"- Frozen node CSV SHA-256: `{report['selected_csv_sha256']}`",
+              f"- Frozen node CSV bytes: `{report['selected_csv_bytes']}`",
+              f"- X-rank window: `{report['selected_x_voxel_min']}` to `{report['selected_x_voxel_max']}` voxels",
+              "",
+              "The exact 1,500 C3 IDs, cell types, layers and XYZ coordinates are stored in the Actions artifact. This node set is now immutable for the primary Experiment 006 edge extraction and model test.",
+          ]
+          comment = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(comment, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(comment)
+          print(comment)
+          PY
+
+      - name: Publish frozen-node audit to Issue 13
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('run-comment.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 13,
+              body,
+            });
+
+      - name: Upload immutable H01 node artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h01-experiment-006-stage-b0-${{ github.run_id }}
+          path: |
+            results/h01_experiment_006_primary_nodes.csv
+            results/h01_stage_b0_node_freeze.json
+            run-comment.md
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6

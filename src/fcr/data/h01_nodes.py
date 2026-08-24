@@ -118,7 +118,8 @@ def freeze_h01_nodes(
     eligible = eligible_h01_neurons(frame)
     if len(eligible) != expected_eligible:
         raise RuntimeError(
-            f"eligible H01 neuron count mismatch: observed={len(eligible)} expected={expected_eligible}"
+            "eligible H01 neuron count mismatch: "
+            f"observed={len(eligible)} expected={expected_eligible}"
         )
 
     primary = central_rank_window(eligible, count=primary_count)

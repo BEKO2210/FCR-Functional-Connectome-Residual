@@ -2,6 +2,12 @@
 
 This runbook is for **data plumbing only**. The root-ID-limited pilot is not a preregistered biological sample and must not be reported as evidence for H1–H3.
 
+## Preferred first-run path: GitHub Actions
+
+For the first real MICrONS pilot, prefer the repository's manual **MICrONS E0 Pilot** GitHub Actions workflow. It runs doctor, export, validation, summary generation, and artifact upload on an ephemeral GitHub runner. See [`GITHUB_MICRONS_RUNBOOK.md`](GITHUB_MICRONS_RUNBOOK.md).
+
+The local commands below remain supported for debugging and independent reproduction.
+
 ## Why the adapter is deliberately strict
 
 The MICrONS proofreading documentation distinguishes axons that are clean from axons that are close to complete. FCR defaults to `axon_fully_extended`, requires dendrite proofreading status, and rejects rows whose `valid_id` no longer equals the current `pt_root_id`.

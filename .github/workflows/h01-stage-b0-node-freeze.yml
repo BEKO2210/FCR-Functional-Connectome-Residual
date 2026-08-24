@@ -77,6 +77,10 @@ jobs:
               raise SystemExit("frozen H01 voxel scale changed")
           if report["c3_id_column"] != "c3_rep_manual":
               raise SystemExit("frozen C3 identity mapping changed")
+          if report["single_soma_scope"] != "within frozen neuron-labeled soma rows":
+              raise SystemExit("reconciled H01 single-soma scope changed")
+          if report["single_soma_reconciliation_comment"] != 5402858106:
+              raise SystemExit("H01 reconciliation provenance changed")
           print("H01 Stage B0 node invariants passed.")
           PY
 
@@ -97,7 +101,9 @@ jobs:
               f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
               f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
               f"- Canonical soma SHA-256: `{report['soma_sha256']}`",
-              f"- Eligible single-soma neurons: `{report['eligible_neurons']}`",
+              f"- Eligible single-neuron-soma C3 identities: `{report['eligible_neurons']}`",
+              f"- Single-soma scope: `{report['single_soma_scope']}`",
+              f"- Reconciliation audit comment: `{report['single_soma_reconciliation_comment']}`",
               f"- Frozen primary nodes: `{report['primary_nodes']}`",
               f"- C3 identity: `{report['c3_id_column']}`",
               f"- Physical voxel scale: `{report['voxel_nm']}` nm",

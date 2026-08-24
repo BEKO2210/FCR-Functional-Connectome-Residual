@@ -30,6 +30,7 @@ def main() -> None:
         "preregistration_issue": 13,
         "schema_mapping_comment": 5402766985,
         "coordinate_mapping_comment": 5402772650,
+        "single_soma_reconciliation_comment": 5402858106,
         "outcome_blind": True,
         "edge_content_accessed": False,
         **report,

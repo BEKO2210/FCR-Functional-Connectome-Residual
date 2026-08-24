@@ -29,6 +29,7 @@ class MICrONSConfig:
     max_candidate_pairs: int = 5_000_000
     proofread_strategies: tuple[str, ...] = _STRICT_AXON_STRATEGIES
     cell_type_table: str = "aibs_metamodel_celltypes_v661"
+    cell_type_batch_size: int = 500
     require_dendrite_status: bool = True
     require_current_valid_id: bool = True
 
@@ -45,6 +46,8 @@ class MICrONSConfig:
             raise ValueError("at least one proofreading strategy is required")
         if not self.cell_type_table:
             raise ValueError("cell_type_table must not be empty")
+        if not 1 <= self.cell_type_batch_size <= 5_000:
+            raise ValueError("cell_type_batch_size must be between 1 and 5,000")
 
 
 def create_cave_client(config: MICrONSConfig) -> Any:
@@ -69,7 +72,7 @@ def create_cave_client(config: MICrONSConfig) -> Any:
 
 
 def _status_true(series: pd.Series) -> pd.Series:
-    """Parse CAVE boolean-like status fields without treating "f" as truthy."""
+    """Parse CAVE boolean-like status fields without treating ``"f"`` as truthy."""
     if pd.api.types.is_bool_dtype(series.dtype):
         return series.fillna(False).astype(bool)
     normalized = series.astype("string").str.strip().str.lower()
@@ -144,6 +147,37 @@ def _unique_cell_types(cell_types: pd.DataFrame) -> pd.DataFrame:
     return out.drop_duplicates("pt_root_id", keep=False).reset_index(drop=True)
 
 
+def _select_nodes_with_cell_types(
+    client: Any, proofread_nodes: pd.DataFrame, config: MICrONSConfig
+) -> pd.DataFrame:
+    """Select up to ``max_nodes`` after all cell-type eligibility filters.
+
+    Cell types are queried in bounded batches so the live pilot never sends an
+    unbounded root-ID list to the materialization service.
+    """
+    selected: list[pd.DataFrame] = []
+    selected_count = 0
+    for start in range(0, len(proofread_nodes), config.cell_type_batch_size):
+        batch = proofread_nodes.iloc[start : start + config.cell_type_batch_size]
+        root_ids = batch["pt_root_id"].to_numpy(dtype=np.int64)
+        cell_types = _unique_cell_types(_query_cell_types(client, root_ids, config))
+        eligible = batch.merge(cell_types, on="pt_root_id", how="inner", validate="one_to_one")
+        if not eligible.empty:
+            selected.append(eligible)
+            selected_count += len(eligible)
+        if selected_count >= config.max_nodes:
+            break
+
+    if not selected:
+        return proofread_nodes.iloc[0:0].assign(cell_type=pd.Series(dtype=str))
+    return (
+        pd.concat(selected, ignore_index=True)
+        .sort_values("pt_root_id", kind="stable")
+        .head(config.max_nodes)
+        .reset_index(drop=True)
+    )
+
+
 def query_microns_pilot(
     config: MICrONSConfig, *, client: Any | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -159,18 +193,7 @@ def query_microns_pilot(
     if len(proofread_nodes) < 2:
         raise RuntimeError("fewer than two eligible proofread neurons were returned")
 
-    cell_types = _query_cell_types(
-        live_client, proofread_nodes["pt_root_id"].to_numpy(dtype=np.int64), config
-    )
-    cell_types = _unique_cell_types(cell_types)
-    nodes = proofread_nodes.merge(
-        cell_types, on="pt_root_id", how="inner", validate="one_to_one"
-    )
-    nodes = (
-        nodes.sort_values("pt_root_id", kind="stable")
-        .head(config.max_nodes)
-        .reset_index(drop=True)
-    )
+    nodes = _select_nodes_with_cell_types(live_client, proofread_nodes, config)
     if len(nodes) < 2:
         raise RuntimeError("fewer than two eligible neurons have unambiguous cell-type labels")
 
@@ -291,6 +314,7 @@ def validate_microns_export(path: str | Path) -> dict[str, Any]:
         node_id = np.asarray(payload["node_id"], dtype=np.int64)
         node_type = np.asarray(payload["node_type"], dtype=str)
         node_xyz = np.asarray(payload["node_xyz_nm"], dtype=float)
+        node_strategy = np.asarray(payload["node_strategy_axon"], dtype=str)
         source = np.asarray(payload["source"], dtype=np.int64)
         target = np.asarray(payload["target"], dtype=np.int64)
         source_type = np.asarray(payload["source_type"], dtype=str)
@@ -304,10 +328,15 @@ def validate_microns_export(path: str | Path) -> dict[str, Any]:
     n_pairs = len(source)
     if n_nodes < 2 or len(np.unique(node_id)) != n_nodes:
         raise ValueError("node IDs must contain at least two unique roots")
-    if node_xyz.shape != (n_nodes, 3) or len(node_type) != n_nodes:
+    if node_xyz.shape != (n_nodes, 3) or len(node_type) != n_nodes or len(node_strategy) != n_nodes:
         raise ValueError("node metadata dimensions are inconsistent")
     if not np.isfinite(node_xyz).all():
         raise ValueError("node coordinates contain non-finite values")
+
+    configured_strategies = set(provenance.get("config", {}).get("proofread_strategies", []))
+    observed_strategies = set(node_strategy.tolist()) - {"unknown"}
+    if configured_strategies and not observed_strategies.issubset(configured_strategies):
+        raise ValueError("node_strategy_axon contains a strategy outside provenance config")
 
     pair_arrays = (target, source_type, target_type, distance, connected, counts)
     if any(len(array) != n_pairs for array in pair_arrays):
@@ -320,8 +349,8 @@ def validate_microns_export(path: str | Path) -> dict[str, Any]:
         raise ValueError("synapse_count contains negative values")
     if not np.array_equal(connected, (counts > 0).astype(np.int8)):
         raise ValueError("connected is inconsistent with synapse_count")
-    if not np.isfinite(distance).all() or np.any(distance < 0):
-        raise ValueError("distance_nm contains invalid values")
+    if not np.isfinite(distance).all() or np.any(distance <= 0):
+        raise ValueError("distance_nm must be finite and > 0 for non-self pairs")
 
     order = np.argsort(node_id)
     sorted_ids = node_id[order]

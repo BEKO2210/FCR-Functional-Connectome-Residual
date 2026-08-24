@@ -18,7 +18,7 @@ class GlobalBernoulliModel:
     alpha: float = 0.5
     probability_: float | None = None
 
-    def fit(self, sample: ConnectomeSample) -> "GlobalBernoulliModel":
+    def fit(self, sample: ConnectomeSample) -> GlobalBernoulliModel:
         y = np.asarray(sample.connected, dtype=np.int8)
         self.probability_ = _beta_mean(int(y.sum()), len(y), self.alpha)
         return self
@@ -40,7 +40,7 @@ class DistanceBinnedModel:
     probabilities_: np.ndarray | None = None
     fallback_: float | None = None
 
-    def fit(self, sample: ConnectomeSample) -> "DistanceBinnedModel":
+    def fit(self, sample: ConnectomeSample) -> DistanceBinnedModel:
         d = np.asarray(sample.distance, dtype=float)
         y = np.asarray(sample.connected, dtype=np.int8)
         if self.n_bins < 2:
@@ -83,7 +83,7 @@ class TypePairModel:
     probabilities_: dict[tuple[str, str], float] = field(default_factory=dict)
     fallback_: float | None = None
 
-    def fit(self, sample: ConnectomeSample) -> "TypePairModel":
+    def fit(self, sample: ConnectomeSample) -> TypePairModel:
         y = np.asarray(sample.connected, dtype=np.int8)
         st = np.asarray(sample.source_type).astype(str)
         tt = np.asarray(sample.target_type).astype(str)
@@ -118,7 +118,7 @@ class TypeDistanceModel:
     probabilities_: dict[tuple[str, str, int], float] = field(default_factory=dict)
     fallback_: float | None = None
 
-    def fit(self, sample: ConnectomeSample) -> "TypeDistanceModel":
+    def fit(self, sample: ConnectomeSample) -> TypeDistanceModel:
         if self.n_bins < 2:
             raise ValueError("n_bins must be >= 2")
         d = np.asarray(sample.distance, dtype=float)

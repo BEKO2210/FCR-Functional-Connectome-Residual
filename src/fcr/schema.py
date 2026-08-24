@@ -36,7 +36,7 @@ class ConnectomeSample:
         if not np.all((y == 0) | (y == 1)):
             raise ValueError("connected must contain only 0 and 1")
 
-    def subset(self, mask: np.ndarray) -> "ConnectomeSample":
+    def subset(self, mask: np.ndarray) -> ConnectomeSample:
         mask = np.asarray(mask, dtype=bool)
         if len(mask) != len(self.connected):
             raise ValueError("mask length must match sample")

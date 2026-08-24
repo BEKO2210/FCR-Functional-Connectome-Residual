@@ -1,0 +1,65 @@
+name: Temporary H01 B0 Metadata Reconciliation
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/_h01-b0-reconcile.yml"
+      - "experiments/006_h01_stage_b0_reconcile.py"
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: Compare soma-only identity interpretations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install minimal dependencies
+        run: python -m pip install "numpy>=2.0" "pandas>=2.2"
+
+      - name: Download canonical H01 soma table only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/h01 results
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://storage.googleapis.com/h01-release/data/20210601/c3/tables/somas.csv" \
+            -o data/public/h01/somas.csv
+          echo "cc38c8670bbeb3d61f58af44a529392111a59196ca0b9e0f74849b0afe1ffaff  data/public/h01/somas.csv" | sha256sum --check
+
+      - name: Run metadata-only reconciliation
+        run: |
+          python experiments/006_h01_stage_b0_reconcile.py \
+            --soma data/public/h01/somas.csv \
+            --output results/h01_b0_reconcile.json
+
+      - name: Enforce no-edge boundary
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("results/h01_b0_reconcile.json").read_text())
+          if report["edge_content_accessed"] is not False:
+              raise SystemExit("diagnostic crossed edge boundary")
+          if report["total_soma_rows"] != 49379:
+              raise SystemExit("canonical soma row count changed")
+          print(json.dumps(report, indent=2))
+          PY
+
+      - name: Upload diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: h01-b0-metadata-reconciliation-${{ github.run_id }}
+          path: results/h01_b0_reconcile.json
+          if-no-files-found: error
+          retention-days: 7

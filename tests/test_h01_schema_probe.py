@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments import _006_h01_stage_b1_schema_probe as probe_module
+from fcr.data import h01_edges
 
 
 def _record() -> dict[str, object]:
@@ -26,14 +26,14 @@ def _record() -> dict[str, object]:
 
 def test_decode_first_record_accepts_jsonl() -> None:
     text = json.dumps(_record()) + "\n" + json.dumps(_record()) + "\n"
-    record, source_format = probe_module.decode_first_record(text)
+    record, source_format = h01_edges.decode_first_record(text)
     assert source_format == "jsonl"
     assert record["pre_synaptic_site"]["neuron_id"] == 222
 
 
 def test_decode_first_record_accepts_array() -> None:
     text = json.dumps([_record(), _record()])
-    record, source_format = probe_module.decode_first_record(text)
+    record, source_format = h01_edges.decode_first_record(text)
     assert source_format == "json-array"
     assert record["post_synaptic_partner"]["neuron_id"] == 444
 
@@ -41,7 +41,7 @@ def test_decode_first_record_accepts_array() -> None:
 def test_probe_schema_emits_structure_not_values(tmp_path: Path) -> None:
     source = tmp_path / "probe.json"
     source.write_text(json.dumps(_record()) + "\n" + json.dumps(_record()), encoding="utf-8")
-    report = probe_module.probe_schema(source)
+    report = h01_edges.probe_schema(source)
     rendered = json.dumps(report)
 
     assert report["required_identity_paths_present"] is True
@@ -58,4 +58,4 @@ def test_probe_schema_rejects_missing_identity_path(tmp_path: Path) -> None:
     source.write_text(json.dumps(record), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="post_synaptic_partner.neuron_id"):
-        probe_module.probe_schema(source)
+        h01_edges.probe_schema(source)

@@ -1,0 +1,244 @@
+name: H01 Experiment 006 Stage B1 Full Extraction
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/h01-stage-b1-extract.yml"
+      - "src/fcr/data/h01_edges.py"
+      - "experiments/006_h01_stage_b1_extract_part.py"
+      - "experiments/006_h01_stage_b1_aggregate.py"
+      - "tests/test_h01_edges.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: h01-experiment-006-stage-b1-full
+  cancel-in-progress: false
+
+jobs:
+  extract:
+    name: Extract H01 shard partition ${{ matrix.part }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3, 4, 5, 6, 7]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR
+        run: python -m pip install -e .
+
+      - name: Regenerate and verify frozen 1,500 H01 nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/h01 work results
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://storage.googleapis.com/h01-release/data/20210601/c3/tables/somas.csv" \
+            -o data/public/h01/somas.csv
+          echo "cc38c8670bbeb3d61f58af44a529392111a59196ca0b9e0f74849b0afe1ffaff  data/public/h01/somas.csv" | sha256sum --check
+          python experiments/006_h01_stage_b0_node_freeze.py \
+            --soma data/public/h01/somas.csv \
+            --selected-csv work/primary_nodes.csv \
+            --report work/node_freeze.json
+          echo "3c954b9206f8e14859fb789b11cb008ee2245c3192cfc29793ab13bb231f55f4  work/primary_nodes.csv" | sha256sum --check
+
+      - name: Stream assigned official H01 shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/006_h01_stage_b1_extract_part.py \
+            --nodes-csv work/primary_nodes.csv \
+            --part-index "${{ matrix.part }}" \
+            --part-count 8 \
+            --work-dir work/shards \
+            --counts "results/part_${{ matrix.part }}.csv" \
+            --report "results/part_${{ matrix.part }}.json"
+
+      - name: Enforce partition boundary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from fcr.data.h01_edges import assigned_shards
+
+          part = ${{ matrix.part }}
+          report = json.loads(Path(f"results/part_{part}.json").read_text())
+          if report["assigned_shards"] != assigned_shards(part, 8):
+              raise SystemExit("partition shard assignment changed")
+          if report["frozen_node_count"] != 1500:
+              raise SystemExit("partition used the wrong node count")
+          if report["model_metrics_computed"] is not False:
+              raise SystemExit("Stage B1 partition computed model metrics")
+          for shard in report["shards"]:
+              if shard["expected_bytes"] != shard["observed_bytes"]:
+                  raise SystemExit(f"shard size mismatch: {shard['shard_index']}")
+          print(f"H01 Stage B1 partition {part} integrity passed.")
+          PY
+
+      - name: Upload partition artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h01-b1-part-${{ matrix.part }}-${{ github.run_id }}
+          path: |
+            results/part_${{ matrix.part }}.csv
+            results/part_${{ matrix.part }}.json
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6
+
+  aggregate:
+    name: Assemble complete frozen H01 candidate graph
+    needs: extract
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR
+        run: python -m pip install -e .
+
+      - name: Regenerate and verify frozen H01 nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/h01 work results parts
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://storage.googleapis.com/h01-release/data/20210601/c3/tables/somas.csv" \
+            -o data/public/h01/somas.csv
+          echo "cc38c8670bbeb3d61f58af44a529392111a59196ca0b9e0f74849b0afe1ffaff  data/public/h01/somas.csv" | sha256sum --check
+          python experiments/006_h01_stage_b0_node_freeze.py \
+            --soma data/public/h01/somas.csv \
+            --selected-csv work/primary_nodes.csv \
+            --report work/node_freeze.json
+          echo "3c954b9206f8e14859fb789b11cb008ee2245c3192cfc29793ab13bb231f55f4  work/primary_nodes.csv" | sha256sum --check
+
+      - name: Download all eight extraction partitions
+        uses: actions/download-artifact@v4
+        with:
+          pattern: h01-b1-part-*-${{ github.run_id }}
+          path: parts
+          merge-multiple: true
+
+      - name: Assemble sparse edges and complete candidate table
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/006_h01_stage_b1_aggregate.py \
+            --nodes-csv work/primary_nodes.csv \
+            --parts-dir parts \
+            --part-count 8 \
+            --sparse-edges results/h01_experiment_006_sparse_edges.csv.gz \
+            --candidate-table results/h01_experiment_006_candidates.csv.gz \
+            --report results/h01_stage_b1_extraction.json
+
+      - name: Enforce complete extraction invariants
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/h01_stage_b1_extraction.json").read_text())
+          if report["stage_b1_extraction_complete"] is not True:
+              raise SystemExit("Stage B1 extraction is not marked complete")
+          if report["source_shards"] != 166:
+              raise SystemExit("not all 166 H01 shards were included")
+          if report["source_bytes"] != 126066253429:
+              raise SystemExit("H01 source byte total differs from Stage A")
+          if report["frozen_node_count"] != 1500:
+              raise SystemExit("wrong frozen H01 node count")
+          if report["candidate_rows"] != 2248500:
+              raise SystemExit("complete directed candidate graph has wrong row count")
+          if report["model_metrics_computed"] is not False:
+              raise SystemExit("Stage B1 computed model metrics")
+          if report["confirmation_decision_computed"] is not False:
+              raise SystemExit("Stage B1 computed the confirmation decision")
+          print("Complete H01 Stage B1 extraction invariants passed.")
+          PY
+
+      - name: Build extraction audit comment
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/h01_stage_b1_extraction.json").read_text())
+          lines = [
+              "## Experiment 006 Stage B1 — complete H01 edge extraction",
+              "",
+              "All official frozen H01 JSON shards were processed before any model evaluation.",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Frozen nodes: `{report['frozen_node_count']}`",
+              f"- Frozen node SHA-256: `{report['frozen_node_sha256']}`",
+              f"- Source shards: `{report['source_shards']}`",
+              f"- Source bytes: `{report['source_bytes']}`",
+              f"- Ordered non-self candidate pairs: `{report['candidate_rows']}`",
+              f"- Connected ordered pairs: `{report['connected_nonself_pairs']}`",
+              f"- Selected non-self synapses: `{report['selected_nonself_synapses']}`",
+              f"- Autapse synapses excluded from primary graph: `{report['selected_autapse_synapses_excluded_from_primary']}`",
+              f"- Sparse edge SHA-256: `{report['sparse_edges_sha256']}`",
+              f"- Candidate table SHA-256: `{report['candidate_table_sha256']}`",
+              "",
+              "No FCR model score or confirmation decision was computed in Stage B1.",
+          ]
+          comment = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(comment, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(comment)
+          print(comment)
+          PY
+
+      - name: Publish Stage B1 audit to Issue 13
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('run-comment.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 13,
+              body,
+            });
+
+      - name: Upload immutable complete extraction artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: h01-experiment-006-stage-b1-${{ github.run_id }}
+          path: |
+            results/h01_experiment_006_sparse_edges.csv.gz
+            results/h01_experiment_006_candidates.csv.gz
+            results/h01_stage_b1_extraction.json
+            work/primary_nodes.csv
+            run-comment.md
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

@@ -15,7 +15,6 @@ from fcr.data.h01_preflight import (
     summarize_object_metadata,
 )
 
-
 H01_BUCKET = "h01-release"
 SYNAPSE_PREFIX = "data/20210601/c3/synapses/exported/json/"
 CREST_URL = (

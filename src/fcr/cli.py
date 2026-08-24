@@ -10,7 +10,7 @@ from .experiment import evaluate_models, save_results
 from .synthetic import generate_synthetic_connectome, train_test_split
 
 
-def _add_microns_parser(subparsers: argparse._SubParsersAction) -> None:
+def _add_microns_parsers(subparsers: argparse._SubParsersAction) -> None:
     microns = subparsers.add_parser(
         "microns-export",
         help="query a small version-pinned MICrONS pilot and export candidate pairs",
@@ -26,6 +26,12 @@ def _add_microns_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     microns.add_argument("--output", default="data/cache/microns_pilot.npz")
 
+    validate = subparsers.add_parser(
+        "microns-validate",
+        help="verify MICrONS NPZ structure, geometry, counts, and provenance SHA-256",
+    )
+    validate.add_argument("input")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -40,7 +46,7 @@ def main() -> None:
     synthetic.add_argument("--pairs", type=int, default=40_000)
     synthetic.add_argument("--seed", type=int, default=7)
     synthetic.add_argument("--output", default="results/synthetic_baselines.json")
-    _add_microns_parser(sub)
+    _add_microns_parsers(sub)
     args = parser.parse_args()
 
     if args.command == "synthetic-baselines":
@@ -66,3 +72,9 @@ def main() -> None:
         npz_path, provenance_path = export_microns_pilot(config, args.output)
         print(f"wrote {npz_path}")
         print(f"wrote {provenance_path}")
+        return
+
+    if args.command == "microns-validate":
+        from .data.microns import validate_microns_export
+
+        print(json.dumps(validate_microns_export(args.input), indent=2))

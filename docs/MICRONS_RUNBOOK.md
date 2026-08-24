@@ -6,6 +6,8 @@ This runbook is for **data plumbing only**. The root-ID-limited pilot is not a p
 
 The MICrONS proofreading documentation distinguishes axons that are clean from axons that are close to complete. FCR defaults to `axon_fully_extended`, requires dendrite proofreading status, and rejects rows whose `valid_id` no longer equals the current `pt_root_id`.
 
+Cell-type annotations are queried in bounded batches. Roots with more than one automated cell-type row are excluded rather than assigned an arbitrary label. `--max-nodes` is applied only after these eligibility checks.
+
 A zero in the exported candidate graph means only:
 
 > no synapse was returned by the pinned CAVE query for this selected pair.
@@ -34,7 +36,7 @@ The official CAVEclient flow stores the token in its local credential store. FCR
 
 ## First safe plumbing run
 
-The current public release used for the initial adapter validation target is materialization **1822**. Versions are never selected implicitly.
+The initial adapter validation target is materialization **1822**. Versions are never selected implicitly.
 
 Start small:
 
@@ -52,9 +54,21 @@ data/cache/microns_v1822_pilot_100.npz
 data/cache/microns_v1822_pilot_100.provenance.json
 ```
 
-The NPZ contains:
+The export command validates its own output before returning. Run the validator explicitly as a second check:
+
+```bash
+fcr microns-validate data/cache/microns_v1822_pilot_100.npz
+```
+
+A successful validation returns JSON with `"valid": true` and the artifact SHA-256, materialization version, node count, candidate-pair count, connected-pair count and total synapse count.
+
+The NPZ contains both node-level source data and the derived candidate graph:
 
 ```text
+node_id
+node_type
+node_xyz_nm
+node_strategy_axon
 source
 target
 source_type
@@ -64,20 +78,36 @@ connected
 synapse_count
 ```
 
-The provenance sidecar records version, selection settings, counts, coordinate units, and caveats. It contains no token.
+The validator checks, among other invariants:
+
+- the NPZ SHA-256 matches the provenance sidecar;
+- node IDs are unique and node coordinates are finite;
+- every directed non-self pair is present exactly once;
+- pair IDs refer only to exported nodes;
+- `connected == (synapse_count > 0)`;
+- pair distances are finite, positive, and exactly reconstructable from exported node coordinates within numerical tolerance;
+- source/target cell types match node metadata;
+- observed proofreading strategies agree with provenance configuration;
+- provenance counts agree with the NPZ.
+
+The provenance sidecar records version, selection settings, counts, coordinate units, caveats and the NPZ SHA-256. It contains no token.
+
+For exactly 100 valid nodes, the candidate graph must contain **9,900** directed non-self pairs.
 
 ## Scale-up plumbing run
 
-Only after the 100-node export passes sanity checks:
+Only after the 100-node export passes `microns-validate`:
 
 ```bash
 fcr microns-export \
   --version 1822 \
   --max-nodes 500 \
   --output data/cache/microns_v1822_pilot_500.npz
+
+fcr microns-validate data/cache/microns_v1822_pilot_500.npz
 ```
 
-500 nodes produce at most 249,500 directed non-self candidate pairs. FCR has a hard candidate-pair limit to prevent accidental quadratic memory explosions.
+500 nodes produce 249,500 directed non-self candidate pairs. FCR has a hard candidate-pair limit to prevent accidental quadratic memory explosions.
 
 ## Do not use this selection for the paper result
 

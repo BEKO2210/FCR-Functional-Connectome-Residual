@@ -88,7 +88,8 @@ class GeometryLogisticModel:
 
         converged = False
         iterations = 0
-        for iterations in range(1, self.max_iter + 1):
+        for iteration in range(1, self.max_iter + 1):
+            iterations = iteration
             probabilities = _sigmoid(design @ coefficients)
             weights = np.clip(probabilities * (1.0 - probabilities), 1e-8, None)
             gradient = design.T @ (targets - probabilities) - self.l2 * penalty * coefficients

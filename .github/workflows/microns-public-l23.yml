@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: microns-public-l23-fcr
@@ -92,7 +93,7 @@ jobs:
           print("Result invariants passed.")
           PY
 
-      - name: Build GitHub summary
+      - name: Build GitHub summary and audit comment
         shell: bash
         run: |
           python - <<'PY'
@@ -106,27 +107,48 @@ jobs:
           best_two_part = min(models, key=lambda x: x["two_part_bits"])
           graph = report["graph"]
           parts = report["partitions"]
+          run_id = os.environ["GITHUB_RUN_ID"]
+          sha = os.environ["GITHUB_SHA"]
 
+          lines = [
+              "## Verified GitHub Actions result",
+              "",
+              "**Evidence:** `E1-structural-public-static-pilot` — no functional or whole-brain claim.",
+              "",
+              f"- GitHub run: `{run_id}`",
+              f"- Commit: `{sha}`",
+              f"- Nodes: `{graph['nodes']}`",
+              f"- Directed candidate pairs: `{graph['directed_candidate_pairs']}`",
+              f"- Connected pairs: `{graph['connected_pairs']}`",
+              f"- Observed synapses: `{graph['observed_synapses']}`",
+              f"- Test pairs: `{parts['test_pairs']}`",
+              f"- Test positive pairs: `{parts['test_positive_pairs']}`",
+              f"- Best residual model: `{best_residual['model']}`",
+              f"- Best two-part model: `{best_two_part['model']}`",
+              "",
+              "| Model | Residual bits | Model bits | Two-part bits | Bits/pair |",
+              "|---|---:|---:|---:|---:|",
+          ]
+          for row in models:
+              lines.append(
+                  f"| {row['model']} | {row['residual_bits']:.3f} | {row['model_bits']} | "
+                  f"{row['two_part_bits']:.3f} | {row['bits_per_pair']:.6f} |"
+              )
+          lines.extend([
+              "",
+              "Input files passed their frozen Zenodo MD5 checks before analysis.",
+          ])
+          text = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(text, encoding="utf-8")
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as out:
-              out.write("# Token-free MICrONS L2/3 FCR pilot\n\n")
-              out.write("**Evidence:** E1 structural public-static pilot. No functional or whole-brain claim.\n\n")
-              out.write(f"- Nodes: `{graph['nodes']}`\n")
-              out.write(f"- Directed candidate pairs: `{graph['directed_candidate_pairs']}`\n")
-              out.write(f"- Connected pairs: `{graph['connected_pairs']}`\n")
-              out.write(f"- Observed synapses: `{graph['observed_synapses']}`\n")
-              out.write(f"- Test pairs: `{parts['test_pairs']}`\n")
-              out.write(f"- Test positive pairs: `{parts['test_positive_pairs']}`\n")
-              out.write(f"- Best residual model: `{best_residual['model']}` — `{best_residual['bits_per_pair']:.6f}` two-part bits/pair\n")
-              out.write(f"- Best two-part model: `{best_two_part['model']}` — `{best_two_part['bits_per_pair']:.6f}` bits/pair\n\n")
-              out.write("## Test-set coding results\n\n")
-              out.write("| Model | Residual bits | Model bits | Two-part bits | Bits/pair |\n")
-              out.write("|---|---:|---:|---:|---:|\n")
-              for row in models:
-                  out.write(
-                      f"| {row['model']} | {row['residual_bits']:.3f} | {row['model_bits']} | "
-                      f"{row['two_part_bits']:.3f} | {row['bits_per_pair']:.6f} |\n"
-                  )
+              out.write(text)
+          print(text)
           PY
+
+      - name: Publish verified result to Milestone A0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue comment 9 --body-file run-comment.md
 
       - name: Upload reproducible public-data artifact
         uses: actions/upload-artifact@v4
@@ -134,6 +156,7 @@ jobs:
           name: microns-public-l23-v185-fcr-${{ github.run_id }}
           path: |
             results/microns_public_l23_v185.json
+            run-comment.md
             data/public/microns_l23/checksums.md5
             data/public/microns_l23/soma_valence_v185.csv
             data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv

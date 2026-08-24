@@ -1,0 +1,142 @@
+name: MICrONS Public L2/3 FCR Pilot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/microns-public-l23.yml"
+      - "src/fcr/data/microns_public_l23.py"
+      - "experiments/004_public_microns_l23.py"
+      - "tests/test_microns_public_l23.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: microns-public-l23-fcr
+  cancel-in-progress: false
+
+jobs:
+  public-pilot:
+    name: Download, verify, split, code
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FCR
+        run: python -m pip install -e .
+
+      - name: Download public MICrONS L2/3 tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/microns_l23
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_valence_v185.csv?download=1" \
+            -o data/public/microns_l23/soma_valence_v185.csv
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_subgraph_synapses_spines_v185.csv?download=1" \
+            -o data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv
+
+      - name: Verify published MD5 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd data/public/microns_l23
+          printf '%s  %s\n' \
+            'b7c349b1ecbdad46185bb98d88b96d20' 'soma_valence_v185.csv' \
+            '5bbb8ff59dcad4ccea6d46930920cd04' 'soma_subgraph_synapses_spines_v185.csv' \
+            > checksums.md5
+          md5sum --check checksums.md5
+
+      - name: Run real-data FCR structural pilot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/004_public_microns_l23.py \
+            --soma data/public/microns_l23/soma_valence_v185.csv \
+            --synapses data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv \
+            --output results/microns_public_l23_v185.json
+
+      - name: Enforce result invariants
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/microns_public_l23_v185.json").read_text())
+          graph = report["graph"]
+          parts = report["partitions"]
+          if graph["nodes"] < 100:
+              raise SystemExit(f"unexpectedly small graph: {graph['nodes']} nodes")
+          if graph["connected_pairs"] <= 0 or graph["observed_synapses"] <= 0:
+              raise SystemExit("public graph contains no positive connectivity")
+          if parts["train_pairs"] <= 0 or parts["validation_pairs"] <= 0 or parts["test_pairs"] <= 0:
+              raise SystemExit("spatial partition is empty")
+          if parts["train_positive_pairs"] <= 0:
+              raise SystemExit("training partition contains no positive pairs")
+          if len(report["test_models"]) != 4:
+              raise SystemExit("expected four structural coding baselines")
+          print("Result invariants passed.")
+          PY
+
+      - name: Build GitHub summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/microns_public_l23_v185.json").read_text())
+          models = report["test_models"]
+          best_residual = min(models, key=lambda x: x["residual_bits"])
+          best_two_part = min(models, key=lambda x: x["two_part_bits"])
+          graph = report["graph"]
+          parts = report["partitions"]
+
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as out:
+              out.write("# Token-free MICrONS L2/3 FCR pilot\n\n")
+              out.write("**Evidence:** E1 structural public-static pilot. No functional or whole-brain claim.\n\n")
+              out.write(f"- Nodes: `{graph['nodes']}`\n")
+              out.write(f"- Directed candidate pairs: `{graph['directed_candidate_pairs']}`\n")
+              out.write(f"- Connected pairs: `{graph['connected_pairs']}`\n")
+              out.write(f"- Observed synapses: `{graph['observed_synapses']}`\n")
+              out.write(f"- Test pairs: `{parts['test_pairs']}`\n")
+              out.write(f"- Test positive pairs: `{parts['test_positive_pairs']}`\n")
+              out.write(f"- Best residual model: `{best_residual['model']}` — `{best_residual['bits_per_pair']:.6f}` two-part bits/pair\n")
+              out.write(f"- Best two-part model: `{best_two_part['model']}` — `{best_two_part['bits_per_pair']:.6f}` bits/pair\n\n")
+              out.write("## Test-set coding results\n\n")
+              out.write("| Model | Residual bits | Model bits | Two-part bits | Bits/pair |\n")
+              out.write("|---|---:|---:|---:|---:|\n")
+              for row in models:
+                  out.write(
+                      f"| {row['model']} | {row['residual_bits']:.3f} | {row['model_bits']} | "
+                      f"{row['two_part_bits']:.3f} | {row['bits_per_pair']:.6f} |\n"
+                  )
+          PY
+
+      - name: Upload reproducible public-data artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: microns-public-l23-v185-fcr-${{ github.run_id }}
+          path: |
+            results/microns_public_l23_v185.json
+            data/public/microns_l23/checksums.md5
+            data/public/microns_l23/soma_valence_v185.csv
+            data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 6

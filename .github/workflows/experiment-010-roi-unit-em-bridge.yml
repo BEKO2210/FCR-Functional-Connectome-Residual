@@ -139,7 +139,7 @@ jobs:
               raise SystemExit("wrong Experiment 010 stage")
           if report["evidence_level"] != "E0-plumbing-only":
               raise SystemExit("Experiment 010 evidence level changed")
-          if report["reconciliation_comments"] != [5404679857, 5408791124]:
+          if report["reconciliation_comments"] != [5404679857, 5408791124, 5408886772]:
               raise SystemExit("Experiment 010 reconciliation provenance changed")
           if report["functional_values_read"] is not False:
               raise SystemExit("functional values were read")
@@ -200,7 +200,6 @@ jobs:
           )
           expected_fields = {
               "id",
-              "valid",
               "pt_position_x",
               "pt_position_y",
               "pt_position_z",
@@ -216,9 +215,13 @@ jobs:
               raise SystemExit("archived coregistration table changed")
           if release["data_url"] != expected_data_url or release["header_url"] != expected_header_url:
               raise SystemExit("v343 archive source changed")
-          if release["reconciliation_comment"] != 5408791124:
+          if release["source_reconciliation_comment"] != 5408791124:
               raise SystemExit("v343 source reconciliation provenance changed")
-          if len(release["schema"]) != 10 or set(release["schema"]) != expected_fields:
+          if release["schema_reconciliation_comment"] != 5408886772:
+              raise SystemExit("v343 schema reconciliation provenance changed")
+          if release["valid_field_present"] is not False:
+              raise SystemExit("v343 archive unexpectedly materialized valid")
+          if len(release["schema"]) != 9 or set(release["schema"]) != expected_fields:
               raise SystemExit("v343 functional coregistration schema changed")
           if set(release["schema_types"]) != expected_fields:
               raise SystemExit("v343 functional coregistration type schema changed")

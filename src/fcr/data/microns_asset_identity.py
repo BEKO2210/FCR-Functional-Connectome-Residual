@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import numpy as np
-
 from fcr.data.microns_roi_unit_bridge import (
     EXPECTED_SCAN_IDX,
     EXPECTED_SESSION,

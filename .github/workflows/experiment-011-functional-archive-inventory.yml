@@ -51,7 +51,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install "numpy==2.4.4" "pytest==9.1.1" "ruff==0.16.4"
+          python -m pip install "numpy==2.4.4" "pandas==2.3.3" "pytest==9.1.1" "ruff==0.16.4"
           python -m pip install -e . --no-deps
 
       - name: Lint and run Experiment 011 boundary tests

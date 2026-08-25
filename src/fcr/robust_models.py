@@ -172,9 +172,11 @@ class DampedGeometryLogisticModel:
         self.scaled_gradient_inf_ = scaled_gradient_inf
         self.backtracks_ = total_backtracks
         if not converged:
-            raise RuntimeError(
-                f"damped geometry logistic optimizer did not converge within {self.max_iter} iterations"
+            message = (
+                "damped geometry logistic optimizer did not converge within "
+                f"{self.max_iter} iterations"
             )
+            raise RuntimeError(message)
         return self
 
     def predict_proba(self, sample: ConnectomeSample) -> np.ndarray:

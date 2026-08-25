@@ -1,0 +1,207 @@
+name: FCR Experiment 011 Functional Archive Inventory
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/experiment-011-functional-archive-inventory.yml"
+      - "src/fcr/data/microns_functional_archive.py"
+      - "experiments/011_microns_functional_archive_inventory.py"
+      - "tests/test_microns_functional_archive.py"
+      - "docs/EXPERIMENT_011_FUNCTIONAL_ARCHIVE.md"
+      - "pyproject.toml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-011-functional-archive-inventory.yml"
+      - "src/fcr/data/microns_functional_archive.py"
+      - "experiments/011_microns_functional_archive_inventory.py"
+      - "tests/test_microns_functional_archive.py"
+      - "docs/EXPERIMENT_011_FUNCTIONAL_ARCHIVE.md"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fcr-experiment-011-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  inventory:
+    name: Outcome-blind MICrONS functional archive inventory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install frozen Experiment 011 test runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "numpy==2.4.4" "pandas==2.3.3" "pytest==9.1.1" "ruff==0.16.4"
+          python -m pip install -e . --no-deps
+
+      - name: Lint and run Experiment 011 boundary tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check \
+            src/fcr/data/microns_functional_archive.py \
+            experiments/011_microns_functional_archive_inventory.py \
+            tests/test_microns_functional_archive.py
+          pytest -q tests/test_microns_functional_archive.py
+
+      - name: Download frozen official functional vignette archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/experiment_011 results
+          url="https://zenodo.org/record/6363348/files/211019_vignette_functional_analysis_data.tgz"
+          out="data/experiment_011/211019_vignette_functional_analysis_data.tgz"
+          curl --fail --location --retry 4 --retry-all-errors --output "$out" "$url"
+          echo "bcb0d4f678909fbd481ac0b01242ae5c  $out" | md5sum --check --strict
+
+      - name: Run frozen archive inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/011_microns_functional_archive_inventory.py \
+            --archive data/experiment_011/211019_vignette_functional_analysis_data.tgz \
+            --output results/experiment_011_inventory.json
+
+      - name: Enforce Experiment 011 information-boundary gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_011_inventory.json").read_text())
+          if report["experiment"] != "011" or report["preregistration_issue"] != 31:
+              raise SystemExit("wrong Experiment 011 provenance")
+          if report["evidence_level"] != "E0-functional-archive-inventory-only":
+              raise SystemExit("Experiment 011 evidence level changed")
+          if report["functional_values_deserialized"] is not False:
+              raise SystemExit("functional values were deserialized")
+          if report["functional_measurements_interpreted"] is not False:
+              raise SystemExit("functional measurements were interpreted")
+          if report["allen_reference_commit"] != "3f53e35e2bfd3063469dcbab0e1dedce5a82e3ca":
+              raise SystemExit("Allen reference commit changed")
+
+          archive = report["archive"]
+          expected_url = (
+              "https://zenodo.org/record/6363348/files/"
+              "211019_vignette_functional_analysis_data.tgz"
+          )
+          expected_md5 = "bcb0d4f678909fbd481ac0b01242ae5c"
+          if archive["url"] != expected_url:
+              raise SystemExit("functional archive URL changed")
+          if archive["published_md5"] != expected_md5 or archive["observed_md5"] != expected_md5:
+              raise SystemExit("functional archive published hash mismatch")
+          if archive["size_bytes"] <= 1_000_000 or len(archive["sha256"]) != 64:
+              raise SystemExit("functional archive provenance incomplete")
+          if not report["outer_inventory"]:
+              raise SystemExit("outer archive inventory is empty")
+          if not report["identity_relevant_member_sha256"]:
+              raise SystemExit("no identity-relevant members were hashed")
+
+          allowed = {
+              "identity-source-available",
+              "identity-source-entangled-with-functional-values",
+              "hard-stop",
+          }
+          if report["next_step_classification"] not in allowed:
+              raise SystemExit("invalid Experiment 011 classification")
+
+          print("Experiment 011 outcome-blind archive inventory gate passed.")
+          PY
+
+      - name: Build Experiment 011 audit summary
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_011_inventory.json").read_text())
+          archive = report["archive"]
+          lines = [
+              "## Experiment 011 — MICrONS v185 functional archive inventory",
+              "",
+              "**No functional measurement was analyzed. This is E0 provenance/schema only.**",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Archive bytes: `{archive['size_bytes']}`",
+              f"- Archive MD5: `{archive['observed_md5']}`",
+              f"- Archive SHA-256: `{archive['sha256']}`",
+              f"- Outer members: `{len(report['outer_inventory'])}`",
+              f"- Nested archives: `{len(report['nested_inventory'])}`",
+              f"- Documented members present: `{', '.join(report['documented_identity_members_present']) or 'none'}`",
+              f"- Documented members missing: `{', '.join(report['documented_identity_members_missing']) or 'none'}`",
+              f"- Separate functional identity members: `{', '.join(report['separate_functional_identity_members']) or 'none'}`",
+              f"- Next-step classification: **`{report['next_step_classification']}`**",
+              "",
+              "This result does not establish a structure↔function cohort and does not authorize functional-fidelity analysis.",
+          ]
+          text = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(text, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(text)
+          print(text)
+          PY
+
+      - name: Upload Experiment 011 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-011-inventory-${{ github.run_id }}
+          path: |
+            results/experiment_011_inventory.json
+            run-comment.md
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  publish:
+    name: Publish merged Experiment 011 audit
+    needs: inventory
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.inventory.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Download successful Experiment 011 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fcr-experiment-011-inventory-${{ github.run_id }}
+
+      - name: Publish audit to Issue 31
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 31,
+              body: fs.readFileSync('run-comment.md', 'utf8'),
+            });

@@ -20,7 +20,10 @@ def _tar_bytes(files: dict[str, bytes]) -> bytes:
     return stream.getvalue()
 
 
-def _run_synthetic(monkeypatch: pytest.MonkeyPatch, inner_files: dict[str, bytes]) -> dict[str, object]:
+def _run_synthetic(
+    monkeypatch: pytest.MonkeyPatch,
+    inner_files: dict[str, bytes],
+) -> dict[str, object]:
     inner = _tar_bytes(inner_files)
     outer = _tar_bytes({"function_data_tables.tgz": inner, "README.txt": b"opaque"})
     md5 = hashlib.md5(outer, usedforsecurity=False).hexdigest()
@@ -50,7 +53,9 @@ def test_nested_inventory_reports_entangled_identity(monkeypatch: pytest.MonkeyP
     assert any(name.endswith("::EASETuning.pkl") for name in hashes)
 
 
-def test_separate_identity_table_changes_only_classification(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_separate_identity_table_changes_only_classification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     report = _run_synthetic(
         monkeypatch,
         {

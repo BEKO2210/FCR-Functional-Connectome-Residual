@@ -1,7 +1,8 @@
 """Outcome-blind DANDI/NWB preflight for Experiment 009.
 
-This module may read structural coregistration identifiers and scalar NWB metadata,
-but it must never read calcium, movie, or stimulus-response array values.
+This module may read structural coregistration identifiers, exact structural point
+coordinates, and scalar NWB metadata, but it must never read calcium, movie, or
+stimulus-response array values.
 """
 
 from __future__ import annotations
@@ -36,7 +37,9 @@ STATIC_NUCLEUS_COLUMNS = (
     "volume",
 )
 MAX_EXACT_FLOAT_INTEGER = 2**53
-COREG_SOURCE = "manual_match_cave_nuclei_id"
+COREG_SOURCE = "exact-v117-pt-position"
+LEGACY_CAVE_SOURCE = "manual_match_cave_nuclei_id"
+POSITION_RECONCILIATION_COMMENT = 5404210234
 
 _ALLOWED_VALUE_PATHS = {
     "/identifier",
@@ -46,9 +49,14 @@ _ALLOWED_VALUE_PATHS = {
 _ALLOWED_PLANE_VALUE_COLUMNS = {
     "id",
     "pt_root_id",
+    "pt_supervoxel_id",
     "cave_ids",
     "cave_ids_index",
+    "pt_x_position",
+    "pt_y_position",
+    "pt_z_position",
 }
+_POSITION_COLUMNS = ("pt_x_position", "pt_y_position", "pt_z_position")
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,7 @@ class RaggedNucleusSummary:
     unsafe_nonnull_values: int
     precision_safe: bool
     row_nucleus_ids: tuple[int | None, ...] | None
+    row_is_ambiguous: tuple[bool, ...] | None
 
 
 def _decode_scalar(value: Any) -> str:
@@ -208,6 +217,34 @@ def _exact_positive_id(raw: Any) -> tuple[int | None, bool]:
     return (value, True) if value > 0 else (None, True)
 
 
+def _exact_nonnegative_coordinate(raw: Any) -> tuple[int | None, bool]:
+    """Decode one EM-voxel coordinate exactly; missing values are allowed."""
+    if isinstance(raw, np.generic):
+        raw = raw.item()
+
+    if isinstance(raw, int):
+        return (raw, True) if raw >= 0 else (None, False)
+
+    if isinstance(raw, float):
+        if np.isnan(raw):
+            return None, True
+        if not np.isfinite(raw) or raw < 0:
+            return None, False
+        exact = raw <= MAX_EXACT_FLOAT_INTEGER and raw == np.floor(raw)
+        return (int(raw), True) if exact else (None, False)
+
+    text = _decode_scalar(raw).strip()
+    if not text or text.lower() in {"nan", "none", "null"}:
+        return None, True
+    if any(character in text.lower() for character in ("e", ".")):
+        return None, False
+    try:
+        value = int(text)
+    except ValueError:
+        return None, False
+    return (value, True) if value >= 0 else (None, False)
+
+
 def decode_ragged_nucleus_ids(
     values: np.ndarray,
     index: np.ndarray,
@@ -234,6 +271,7 @@ def decode_ragged_nucleus_ids(
         raise RuntimeError("cave_ids contains values without VectorIndex rows")
 
     row_ids: list[int | None] = []
+    row_is_ambiguous: list[bool] = []
     rows_unmatched = 0
     rows_single = 0
     rows_ambiguous = 0
@@ -242,21 +280,24 @@ def decode_ragged_nucleus_ids(
     for endpoint in endpoints:
         unique_ids: set[int] = set()
         for raw in data[start:endpoint]:
-            nucleus_id, safe = _exact_positive_id(raw)
+            legacy_id, safe = _exact_positive_id(raw)
             if not safe:
                 unsafe_values += 1
-            if nucleus_id is not None:
-                unique_ids.add(nucleus_id)
+            if legacy_id is not None:
+                unique_ids.add(legacy_id)
         start = endpoint
 
         if not unique_ids:
             row_ids.append(None)
+            row_is_ambiguous.append(False)
             rows_unmatched += 1
         elif len(unique_ids) == 1:
             row_ids.append(next(iter(unique_ids)))
+            row_is_ambiguous.append(False)
             rows_single += 1
         else:
             row_ids.append(None)
+            row_is_ambiguous.append(True)
             rows_ambiguous += 1
 
     precision_safe = unsafe_values == 0
@@ -271,11 +312,12 @@ def decode_ragged_nucleus_ids(
         unsafe_nonnull_values=unsafe_values,
         precision_safe=precision_safe,
         row_nucleus_ids=tuple(row_ids) if precision_safe else None,
+        row_is_ambiguous=tuple(row_is_ambiguous) if precision_safe else None,
     )
 
 
 def cohort_csv_bytes(rows: list[dict[str, object]]) -> bytes:
-    """Create a deterministic one-ROI/one-nucleus structural cohort manifest."""
+    """Create the deterministic frozen Stage-A structure↔ROI cohort manifest."""
     ordered = sorted(
         rows,
         key=lambda row: (
@@ -291,9 +333,13 @@ def cohort_csv_bytes(rows: list[dict[str, object]]) -> bytes:
             "asset_path",
             "plane",
             "roi_id",
+            "legacy_cave_id",
+            "pt_position_x",
+            "pt_position_y",
+            "pt_position_z",
             "nucleus_id",
-            "coreg_source",
             "v117_pt_root_id",
+            "coreg_source",
         ],
         lineterminator="\n",
     )
@@ -333,15 +379,100 @@ def _scan_roi_response_series(ophys: Any) -> list[dict[str, object]]:
     return series
 
 
-def _deduplicate_nucleus_rows(
-    rows: list[dict[str, object]],
-) -> tuple[list[dict[str, object]], dict[str, int]]:
-    counts = Counter(int(row["nucleus_id"]) for row in rows)
-    duplicated_ids = {nucleus_id for nucleus_id, count in counts.items() if count > 1}
-    retained = [row for row in rows if int(row["nucleus_id"]) not in duplicated_ids]
-    return retained, {
-        "duplicate_nucleus_identities": len(duplicated_ids),
-        "roi_rows_excluded_for_duplicate_nucleus": len(rows) - len(retained),
+def _position_candidates_for_plane(
+    plane: Any,
+    *,
+    plane_name: str,
+    row_count: int,
+    asset_path: str,
+    ragged: RaggedNucleusSummary,
+    value_read_paths: list[str],
+) -> tuple[list[dict[str, object]], dict[str, int | bool]]:
+    required_positions = set(_POSITION_COLUMNS)
+    if not required_positions.issubset(plane.keys()):
+        if ragged.rows_single or ragged.rows_ambiguous:
+            raise RuntimeError(
+                "legacy structural matches exist without complete v117 position columns"
+            )
+        return [], {
+            "position_columns_present": False,
+            "rows_all_position_missing": row_count,
+            "rows_exact_complete_position": 0,
+            "rows_partial_position": 0,
+            "unsafe_position_values": 0,
+            "rows_excluded_ambiguous_legacy_cave_id": 0,
+        }
+
+    roi_path = f"/processing/ophys/ImageSegmentation/{plane_name}/id"
+    roi_values = _read_allowed_value(plane["id"], roi_path).reshape(-1)
+    if len(roi_values) != row_count:
+        raise RuntimeError("PlaneSegmentation id length does not match row count")
+    if roi_path not in value_read_paths:
+        value_read_paths.append(roi_path)
+
+    coordinate_arrays: dict[str, np.ndarray] = {}
+    for column in _POSITION_COLUMNS:
+        path = f"/processing/ophys/ImageSegmentation/{plane_name}/{column}"
+        values = _read_allowed_value(plane[column], path).reshape(-1)
+        if len(values) != row_count:
+            raise RuntimeError(f"{column} length does not match PlaneSegmentation rows")
+        coordinate_arrays[column] = values
+        value_read_paths.append(path)
+
+    if ragged.row_nucleus_ids is None or ragged.row_is_ambiguous is None:
+        raise RuntimeError("legacy cave_ids are not precision-safe")
+
+    candidates: list[dict[str, object]] = []
+    rows_missing = 0
+    rows_complete = 0
+    rows_partial = 0
+    unsafe_values = 0
+    rows_ambiguous = 0
+
+    for row_index in range(row_count):
+        decoded: list[int | None] = []
+        for column in _POSITION_COLUMNS:
+            value, safe = _exact_nonnegative_coordinate(coordinate_arrays[column][row_index])
+            if not safe:
+                unsafe_values += 1
+            decoded.append(value)
+
+        if unsafe_values:
+            raise RuntimeError("structural point coordinate is not exact non-negative integer")
+
+        present = sum(value is not None for value in decoded)
+        if present == 0:
+            rows_missing += 1
+            continue
+        if present != 3:
+            rows_partial += 1
+            raise RuntimeError("structural candidate has only a partial v117 point coordinate")
+        if ragged.row_is_ambiguous[row_index]:
+            rows_ambiguous += 1
+            continue
+
+        rows_complete += 1
+        x, y, z = (int(value) for value in decoded if value is not None)
+        candidates.append(
+            {
+                "asset_path": asset_path,
+                "plane": plane_name,
+                "roi_id": _decode_scalar(roi_values[row_index]),
+                "legacy_cave_id": ragged.row_nucleus_ids[row_index],
+                "pt_position_x": x,
+                "pt_position_y": y,
+                "pt_position_z": z,
+                "coreg_source": COREG_SOURCE,
+            }
+        )
+
+    return candidates, {
+        "position_columns_present": True,
+        "rows_all_position_missing": rows_missing,
+        "rows_exact_complete_position": rows_complete,
+        "rows_partial_position": rows_partial,
+        "unsafe_position_values": unsafe_values,
+        "rows_excluded_ambiguous_legacy_cave_id": rows_ambiguous,
     }
 
 
@@ -350,7 +481,7 @@ def scan_hdf5_metadata(
     *,
     asset_path: str,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
-    """Inspect NWB metadata/coregistration without reading functional values."""
+    """Inspect NWB structural metadata/coregistration without reading function."""
     scalar_metadata: dict[str, str] = {}
     value_read_paths: list[str] = []
     for key in ("identifier", "session_description", "session_start_time"):
@@ -367,7 +498,7 @@ def scan_hdf5_metadata(
 
     plane_reports: list[dict[str, object]] = []
     candidate_rows: list[dict[str, object]] = []
-    all_nucleus_ids_safe = True
+    all_legacy_ids_safe = True
     all_root_ids_exact = True
 
     for plane_name in sorted(image_segmentation.keys()):
@@ -407,28 +538,23 @@ def scan_hdf5_metadata(
 
         required = {"id", "cave_ids", "cave_ids_index"}
         if not required.issubset(plane.keys()):
-            report["nucleus_coregistration"] = {"present": False}
+            report["legacy_cave_coregistration"] = {"present": False}
+            report["position_coregistration"] = {"position_columns_present": False}
             plane_reports.append(report)
             continue
 
-        roi_path = f"/processing/ophys/ImageSegmentation/{plane_name}/id"
         cave_path = f"/processing/ophys/ImageSegmentation/{plane_name}/cave_ids"
         index_path = f"/processing/ophys/ImageSegmentation/{plane_name}/cave_ids_index"
-        roi_values = _read_allowed_value(plane["id"], roi_path).reshape(-1)
         cave_values = _read_allowed_value(plane["cave_ids"], cave_path)
         cave_index = _read_allowed_value(plane["cave_ids_index"], index_path)
-        value_read_paths.extend([roi_path, cave_path, index_path])
+        value_read_paths.extend([cave_path, index_path])
 
-        ragged = decode_ragged_nucleus_ids(
-            cave_values,
-            cave_index,
-            row_count=row_count,
-        )
-        all_nucleus_ids_safe = all_nucleus_ids_safe and ragged.precision_safe
-        report["nucleus_coregistration"] = {
+        ragged = decode_ragged_nucleus_ids(cave_values, cave_index, row_count=row_count)
+        all_legacy_ids_safe = all_legacy_ids_safe and ragged.precision_safe
+        report["legacy_cave_coregistration"] = {
             "present": True,
             "source_column": "cave_ids",
-            "canonical_identity": "nucleus_id",
+            "canonical_identity": False,
             "data_dtype": ragged.data_dtype,
             "index_dtype": ragged.index_dtype,
             "raw_value_count": ragged.raw_value_count,
@@ -439,22 +565,21 @@ def scan_hdf5_metadata(
             "precision_safe": ragged.precision_safe,
         }
 
-        if ragged.precision_safe and ragged.row_nucleus_ids is not None:
-            for source_index, nucleus_id in enumerate(ragged.row_nucleus_ids):
-                if nucleus_id is None:
-                    continue
-                candidate_rows.append(
-                    {
-                        "asset_path": asset_path,
-                        "plane": plane_name,
-                        "roi_id": _decode_scalar(roi_values[source_index]),
-                        "nucleus_id": nucleus_id,
-                        "coreg_source": COREG_SOURCE,
-                    }
-                )
+        if not ragged.precision_safe:
+            raise RuntimeError("legacy cave_ids contain unsafe non-null values")
+
+        plane_candidates, position_report = _position_candidates_for_plane(
+            plane,
+            plane_name=plane_name,
+            row_count=row_count,
+            asset_path=asset_path,
+            ragged=ragged,
+            value_read_paths=value_read_paths,
+        )
+        report["position_coregistration"] = position_report
+        candidate_rows.extend(plane_candidates)
         plane_reports.append(report)
 
-    deduplicated_rows, duplicate_report = _deduplicate_nucleus_rows(candidate_rows)
     response_series = _scan_roi_response_series(ophys)
 
     interval_reports: list[dict[str, object]] = []
@@ -466,13 +591,7 @@ def scan_hdf5_metadata(
                 continue
             columns = sorted(table.keys())
             row_count = int(table["id"].shape[0]) if "id" in table else None
-            interval_reports.append(
-                {
-                    "name": name,
-                    "row_count": row_count,
-                    "columns": columns,
-                }
-            )
+            interval_reports.append({"name": name, "row_count": row_count, "columns": columns})
 
     report = {
         "nwb_scalar_metadata": scalar_metadata,
@@ -480,20 +599,17 @@ def scan_hdf5_metadata(
         "roi_response_series_metadata_only": response_series,
         "stimulus_interval_metadata_only": interval_reports,
         "coregistration": {
-            "canonical_identity": "nucleus_id",
+            "canonical_identity": "nucleus_detection_v0.id",
             "coreg_source": COREG_SOURCE,
-            "nucleus_id_precision_safe": all_nucleus_ids_safe,
+            "legacy_cave_id_source": LEGACY_CAVE_SOURCE,
+            "legacy_cave_id_precision_safe": all_legacy_ids_safe,
             "nwb_pt_root_id_exact_integer_safe": all_root_ids_exact,
-            "pre_duplicate_candidate_rows": len(candidate_rows),
-            "pre_static_candidate_rows": (
-                len(deduplicated_rows) if all_nucleus_ids_safe else 0
-            ),
-            **duplicate_report,
+            "pre_static_candidate_rows": len(candidate_rows),
         },
         "value_read_paths": value_read_paths,
         "functional_values_read": False,
     }
-    return report, deduplicated_rows if all_nucleus_ids_safe else []
+    return report, candidate_rows
 
 
 def _parse_exact_decimal(
@@ -516,14 +632,22 @@ def _parse_exact_decimal(
     return parsed
 
 
+def _candidate_point(row: dict[str, object]) -> tuple[int, int, int]:
+    return (
+        int(row["pt_position_x"]),
+        int(row["pt_position_y"]),
+        int(row["pt_position_z"]),
+    )
+
+
 def validate_static_nucleus_table(
     raw_csv: bytes,
     candidate_rows: list[dict[str, object]],
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """Validate stable nucleus IDs against the headerless public v117 table."""
-    target_ids = {int(row["nucleus_id"]) for row in candidate_rows}
-    target_hits: Counter[int] = Counter()
-    target_roots: dict[int, int] = {}
+    """Join ROI candidates to the public v117 table by exact EM-voxel point."""
+    target_points = {_candidate_point(row) for row in candidate_rows}
+    target_hits: Counter[tuple[int, int, int]] = Counter()
+    target_rows: dict[tuple[int, int, int], tuple[int, int]] = {}
     total_rows = 0
 
     text = io.StringIO(raw_csv.decode("utf-8-sig"))
@@ -537,56 +661,76 @@ def validate_static_nucleus_table(
                 "static nucleus table row does not match frozen eight-column schema"
             )
         source_row = dict(zip(STATIC_NUCLEUS_COLUMNS, raw_row, strict=True))
-        nucleus_id = _parse_exact_decimal(source_row["id"], field="id")
-        if nucleus_id not in target_ids:
-            continue
-        root_id = _parse_exact_decimal(
-            source_row["pt_root_id"],
-            field="pt_root_id",
-            allow_zero=True,
+        point = (
+            _parse_exact_decimal(
+                source_row["pt_position_x"], field="pt_position_x", allow_zero=True
+            ),
+            _parse_exact_decimal(
+                source_row["pt_position_y"], field="pt_position_y", allow_zero=True
+            ),
+            _parse_exact_decimal(
+                source_row["pt_position_z"], field="pt_position_z", allow_zero=True
+            ),
         )
-        target_hits[nucleus_id] += 1
-        target_roots[nucleus_id] = root_id
+        if point not in target_points:
+            continue
+        nucleus_id = _parse_exact_decimal(source_row["id"], field="id")
+        root_id = _parse_exact_decimal(
+            source_row["pt_root_id"], field="pt_root_id", allow_zero=True
+        )
+        target_hits[point] += 1
+        target_rows[point] = (nucleus_id, root_id)
 
-    missing = sorted(target_ids - set(target_hits))
-    nonunique = sorted(nucleus_id for nucleus_id, count in target_hits.items() if count != 1)
-    no_positive_root = sorted(
-        nucleus_id
-        for nucleus_id, count in target_hits.items()
-        if count == 1 and target_roots[nucleus_id] <= 0
-    )
-    eligible_ids = target_ids - set(no_positive_root)
-    validation_ok = not missing and not nonunique and bool(eligible_ids)
+    missing = sorted(target_points - set(target_hits))
+    nonunique = sorted(point for point, count in target_hits.items() if count != 1)
+    exact_join_ok = not missing and not nonunique and bool(target_points)
 
-    validated_rows: list[dict[str, object]] = []
-    if validation_ok:
+    joined_rows: list[dict[str, object]] = []
+    no_positive_root_points: set[tuple[int, int, int]] = set()
+    if exact_join_ok:
         for row in candidate_rows:
-            nucleus_id = int(row["nucleus_id"])
-            if nucleus_id not in eligible_ids:
+            point = _candidate_point(row)
+            nucleus_id, root_id = target_rows[point]
+            if root_id <= 0:
+                no_positive_root_points.add(point)
                 continue
-            validated_rows.append(
+            joined_rows.append(
                 {
                     **row,
-                    "v117_pt_root_id": target_roots[nucleus_id],
+                    "nucleus_id": nucleus_id,
+                    "v117_pt_root_id": root_id,
                 }
             )
 
-    excluded_rows = sum(
-        1 for row in candidate_rows if int(row["nucleus_id"]) in set(no_positive_root)
-    )
+    nucleus_counts = Counter(int(row["nucleus_id"]) for row in joined_rows)
+    duplicated_nucleus_ids = {
+        nucleus_id for nucleus_id, count in nucleus_counts.items() if count > 1
+    }
+    validated_rows = [
+        row for row in joined_rows if int(row["nucleus_id"]) not in duplicated_nucleus_ids
+    ]
+
+    validation_ok = exact_join_ok and bool(validated_rows)
     return validated_rows, {
         "url": NUCLEUS_DETECTION_URL,
         "file_format": "headerless-positional-v117-eight-columns",
         "column_order": list(STATIC_NUCLEUS_COLUMNS),
+        "join_key": ["pt_position_x", "pt_position_y", "pt_position_z"],
+        "coordinate_space": "v117-em-voxels-x4nm-y4nm-z40nm",
         "sha256": hashlib.sha256(raw_csv).hexdigest(),
         "source_rows": total_rows,
-        "candidate_unique_nucleus_ids": len(target_ids),
-        "matched_unique_nucleus_ids": len(target_hits),
-        "missing_candidate_ids": len(missing),
-        "nonunique_candidate_ids": len(nonunique),
-        "candidate_ids_without_positive_v117_root": len(no_positive_root),
-        "roi_rows_excluded_without_positive_v117_root": excluded_rows,
+        "candidate_unique_points": len(target_points),
+        "matched_unique_points": len(target_hits),
+        "missing_candidate_points": len(missing),
+        "nonunique_candidate_points": len(nonunique),
+        "candidate_points_without_positive_v117_root": len(no_positive_root_points),
+        "roi_rows_excluded_without_positive_v117_root": sum(
+            1 for row in candidate_rows if _candidate_point(row) in no_positive_root_points
+        ),
+        "duplicate_nucleus_identities": len(duplicated_nucleus_ids),
+        "roi_rows_excluded_for_duplicate_nucleus": len(joined_rows) - len(validated_rows),
         "validated_cohort_rows": len(validated_rows),
+        "exact_position_join_ok": exact_join_ok,
         "validation_ok": validation_ok,
     }
 
@@ -635,18 +779,20 @@ def run_dandi_preflight(output_json: str | Path, output_csv: str | Path) -> dict
             )
 
     static_csv = _download_static_nucleus_table()
-    validated_rows, static_report = validate_static_nucleus_table(
-        static_csv,
-        candidate_rows,
-    )
+    validated_rows, static_report = validate_static_nucleus_table(static_csv, candidate_rows)
     manifest_bytes = cohort_csv_bytes(validated_rows) if static_report["validation_ok"] else None
-    nwb_report["coregistration"]["static_nucleus_validation"] = static_report
-    nwb_report["coregistration"]["candidate_rows"] = (
-        len(validated_rows) if manifest_bytes is not None else 0
-    )
-    nwb_report["coregistration"]["candidate_manifest_sha256"] = (
+    coreg = nwb_report["coregistration"]
+    coreg["static_nucleus_validation"] = static_report
+    coreg["candidate_rows"] = len(validated_rows) if manifest_bytes is not None else 0
+    coreg["candidate_manifest_sha256"] = (
         hashlib.sha256(manifest_bytes).hexdigest() if manifest_bytes is not None else None
     )
+    coreg["duplicate_nucleus_identities"] = static_report[
+        "duplicate_nucleus_identities"
+    ]
+    coreg["roi_rows_excluded_for_duplicate_nucleus"] = static_report[
+        "roi_rows_excluded_for_duplicate_nucleus"
+    ]
 
     report = {
         "experiment": "009",
@@ -655,6 +801,7 @@ def run_dandi_preflight(output_json: str | Path, output_csv: str | Path) -> dict
         "schema_reconciliation_comment": 5404064572,
         "duplicate_mapping_addendum_comment": 5404074984,
         "static_schema_reconciliation_comment": 5404134131,
+        "position_join_reconciliation_comment": POSITION_RECONCILIATION_COMMENT,
         "asset": asset_report,
         "nwb": nwb_report,
         "h01_or_connectivity_accessed": False,

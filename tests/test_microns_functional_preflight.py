@@ -42,18 +42,18 @@ class FakeDataset:
 def _frozen_header_bytes() -> bytes:
     # The archived GCS header uses CRLF; byte identity is intentional.
     return (
-        "id,int64\r\n"
-        "volume,float64\r\n"
-        "pt_root_id,int64\r\n"
-        "orig_root_id,int64\r\n"
-        "pt_supervoxel_id,int64\r\n"
-        "pt_position_x,int64\r\n"
-        "pt_position_y,int64\r\n"
-        "pt_position_z,int64\r\n"
-        "pt_position_lookup_x,int64\r\n"
-        "pt_position_lookup_y,int64\r\n"
-        "pt_position_lookup_z,int64\r\n"
-    ).encode("utf-8")
+        b"id,int64\r\n"
+        b"volume,float64\r\n"
+        b"pt_root_id,int64\r\n"
+        b"orig_root_id,int64\r\n"
+        b"pt_supervoxel_id,int64\r\n"
+        b"pt_position_x,int64\r\n"
+        b"pt_position_y,int64\r\n"
+        b"pt_position_z,int64\r\n"
+        b"pt_position_lookup_x,int64\r\n"
+        b"pt_position_lookup_y,int64\r\n"
+        b"pt_position_lookup_z,int64\r\n"
+    )
 
 
 def _columns() -> tuple[str, ...]:

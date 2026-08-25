@@ -27,11 +27,11 @@ V343_COREG_HEADER_URL = (
     "https://storage.googleapis.com/mat_dbs/public/minnie65_phase3_v1/v343/"
     "func_unit_em_match_release_merged_header.csv"
 )
-V343_RECONCILIATION_COMMENT = 5408791124
+V343_SOURCE_RECONCILIATION_COMMENT = 5408791124
+V343_SCHEMA_RECONCILIATION_COMMENT = 5408886772
 
 EXPECTED_FIELDS = {
     "id",
-    "valid",
     "pt_position_x",
     "pt_position_y",
     "pt_position_z",
@@ -78,7 +78,7 @@ def parse_v343_header(header_bytes: bytes) -> tuple[list[str], dict[str, str]]:
             f"missing={missing}, extra={extra}"
         )
     if len(columns) != len(EXPECTED_FIELDS):
-        raise RuntimeError("v343 coregistration header does not contain exactly ten columns")
+        raise RuntimeError("v343 coregistration header does not contain exactly nine columns")
 
     return columns, types
 
@@ -118,11 +118,6 @@ def parse_v343_coregistration(
             continue
 
         target_rows += 1
-        if record["valid"].strip().lower() not in {"t", "true", "1"}:
-            raise RuntimeError(
-                f"target v343 functional coregistration row {row_number} is marked invalid"
-            )
-
         unit_id = _exact_integer(record["unit_id"], minimum=0)
         root_id = _exact_integer(record["pt_root_id"], minimum=1)
         x = _exact_integer(record["pt_position_x"], minimum=0)
@@ -143,6 +138,8 @@ def parse_v343_coregistration(
         "schema_types": types,
         "source_rows": source_rows,
         "target_session_scan_rows": target_rows,
-        "reconciliation_comment": V343_RECONCILIATION_COMMENT,
+        "valid_field_present": False,
+        "source_reconciliation_comment": V343_SOURCE_RECONCILIATION_COMMENT,
+        "schema_reconciliation_comment": V343_SCHEMA_RECONCILIATION_COMMENT,
     }
     return by_unit, report

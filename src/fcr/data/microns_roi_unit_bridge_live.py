@@ -26,7 +26,8 @@ from fcr.data.microns_roi_unit_bridge import (
 from fcr.data.microns_v343_coreg import (
     V343_COREG_DATA_URL,
     V343_COREG_HEADER_URL,
-    V343_RECONCILIATION_COMMENT,
+    V343_SCHEMA_RECONCILIATION_COMMENT,
+    V343_SOURCE_RECONCILIATION_COMMENT,
     parse_v343_coregistration,
 )
 
@@ -94,7 +95,8 @@ def run_reconciled_preflight(
         "preregistration_issue": PREREGISTRATION_ISSUE,
         "reconciliation_comments": [
             ASSET_IDENTITY_RECONCILIATION_COMMENT,
-            V343_RECONCILIATION_COMMENT,
+            V343_SOURCE_RECONCILIATION_COMMENT,
+            V343_SCHEMA_RECONCILIATION_COMMENT,
         ],
         "functional_values_read": False,
         "connectivity_accessed": False,

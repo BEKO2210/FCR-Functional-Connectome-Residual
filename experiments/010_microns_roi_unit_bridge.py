@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from fcr.data.microns_roi_unit_bridge import run_preflight
+from fcr.data.microns_roi_unit_bridge_live import run_reconciled_preflight
 
 
 def main() -> None:
@@ -14,7 +14,7 @@ def main() -> None:
     parser.add_argument("--cohort-output", required=True)
     args = parser.parse_args()
 
-    report = run_preflight(args.output, args.cohort_output)
+    report = run_reconciled_preflight(args.output, args.cohort_output)
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

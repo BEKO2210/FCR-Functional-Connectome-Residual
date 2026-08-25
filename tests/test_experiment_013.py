@@ -161,7 +161,7 @@ def test_matched_random_test_is_reproducible() -> None:
                     surprise,
                     0.5,
                     0.5 + delta,
-                    same_scan=(i % 2 == 0),
+                    same_scan=True,
                 )
             )
     marked = _mark_quartiles(_assign_distance_bins(edges))

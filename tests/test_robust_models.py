@@ -40,6 +40,10 @@ def _synthetic_sample(*, rare: bool = False) -> ConnectomeSample:
     )
 
 
+def _objective_is_monotone(history: list[float]) -> bool:
+    return all(current <= previous for previous, current in zip(history, history[1:]))
+
+
 def test_damped_solver_is_deterministic_and_monotone() -> None:
     sample = _synthetic_sample()
     first = DampedGeometryLogisticModel(feature_set="spatial", l2=10.0).fit(sample)
@@ -50,14 +54,7 @@ def test_damped_solver_is_deterministic_and_monotone() -> None:
     assert np.array_equal(first.coefficients_, second.coefficients_)
     assert np.array_equal(first.predict_proba(sample), second.predict_proba(sample))
     assert first.objective_history_ == second.objective_history_
-    assert all(
-        current <= previous
-        for previous, current in zip(
-            first.objective_history_,
-            first.objective_history_[1:],
-            strict=True,
-        )
-    )
+    assert _objective_is_monotone(first.objective_history_)
 
 
 def test_damped_solver_converges_on_rare_correlated_problem() -> None:
@@ -69,14 +66,7 @@ def test_damped_solver_converges_on_rare_correlated_problem() -> None:
     assert model.iterations_ <= 500
     assert np.all(np.isfinite(probabilities))
     assert np.all((probabilities > 0.0) & (probabilities < 1.0))
-    assert all(
-        current <= previous
-        for previous, current in zip(
-            model.objective_history_,
-            model.objective_history_[1:],
-            strict=True,
-        )
-    )
+    assert _objective_is_monotone(model.objective_history_)
 
 
 def test_damped_solver_matches_original_when_original_converges() -> None:

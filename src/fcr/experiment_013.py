@@ -224,7 +224,7 @@ def _assign_distance_bins(edges: list[EligibleEdge]) -> list[EligibleEdge]:
         by_fold[edge.fold].append(idx)
 
     mutable = [edge.__dict__.copy() for edge in edges]
-    for fold, indices in sorted(by_fold.items()):
+    for _fold, indices in sorted(by_fold.items()):
         ordered = sorted(
             indices,
             key=lambda i: (edges[i].distance_nm, edges[i].source, edges[i].target),
@@ -241,7 +241,7 @@ def _mark_quartiles(edges: list[EligibleEdge]) -> list[EligibleEdge]:
     for idx, edge in enumerate(edges):
         by_fold[edge.fold].append(idx)
     mutable = [edge.__dict__.copy() for edge in edges]
-    for fold, indices in sorted(by_fold.items()):
+    for _fold, indices in sorted(by_fold.items()):
         ordered = sorted(
             indices,
             key=lambda i: (edges[i].surprise_bits, edges[i].source, edges[i].target),
@@ -254,7 +254,9 @@ def _mark_quartiles(edges: list[EligibleEdge]) -> list[EligibleEdge]:
     return [EligibleEdge(**row) for row in mutable]
 
 
-def build_heldout_functional_edges(data: PublicL23Data, tuning: TuningData) -> tuple[list[EligibleEdge], list[float]]:
+def build_heldout_functional_edges(
+    data: PublicL23Data, tuning: TuningData
+) -> tuple[list[EligibleEdge], list[float]]:
     if len(data.node_ids) != EXPECTED_STRUCTURAL_NODES:
         raise RuntimeError("unexpected structural node count")
     lookup = {
@@ -280,7 +282,9 @@ def build_heldout_functional_edges(data: PublicL23Data, tuning: TuningData) -> t
         probabilities = np.asarray(model.predict_proba(test), dtype=float)
         if not model.converged_:
             raise RuntimeError("spatial model did not converge")
-        if not np.all(np.isfinite(probabilities)) or np.any((probabilities <= 0) | (probabilities >= 1)):
+        if not np.all(np.isfinite(probabilities)) or np.any(
+            (probabilities <= 0) | (probabilities >= 1)
+        ):
             raise RuntimeError("invalid held-out spatial probabilities")
 
         source = np.asarray(test.source)

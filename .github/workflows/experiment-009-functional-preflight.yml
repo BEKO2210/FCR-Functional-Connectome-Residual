@@ -1,0 +1,219 @@
+name: FCR Experiment 009 Functional Preflight
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/experiment-009-functional-preflight.yml"
+      - "src/fcr/data/microns_functional_preflight.py"
+      - "experiments/009_microns_functional_preflight.py"
+      - "tests/test_microns_functional_preflight.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-009-functional-preflight.yml"
+      - "src/fcr/data/microns_functional_preflight.py"
+      - "experiments/009_microns_functional_preflight.py"
+      - "tests/test_microns_functional_preflight.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: fcr-experiment-009-functional-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Stream metadata/coregistration only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install frozen preflight runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "numpy==2.5.2" "pandas==3.0.5" \
+            "dandi==0.76.8" "h5py==3.16.0" "fsspec[http]==2026.7.0"
+          python -m pip install -e . --no-deps
+          python - <<'PY'
+          import sys
+          import fsspec
+          import h5py
+          import numpy
+          if sys.version_info[:2] != (3, 12):
+              raise SystemExit(f"unexpected Python runtime: {sys.version}")
+          if numpy.__version__ != "2.5.2":
+              raise SystemExit(f"unexpected NumPy version: {numpy.__version__}")
+          if h5py.__version__ != "3.16.0":
+              raise SystemExit(f"unexpected h5py version: {h5py.__version__}")
+          if fsspec.__version__ != "2026.7.0":
+              raise SystemExit(f"unexpected fsspec version: {fsspec.__version__}")
+          PY
+
+      - name: Lint and run information-boundary tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "pytest==9.1.1" "ruff==0.16.4"
+          ruff check src/fcr/data/microns_functional_preflight.py \
+            experiments/009_microns_functional_preflight.py \
+            tests/test_microns_functional_preflight.py
+          pytest -q tests/test_microns_functional_preflight.py
+
+      - name: Stream frozen DANDI asset metadata and coregistration only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/009_microns_functional_preflight.py \
+            --output results/experiment_009_stage_a.json \
+            --cohort-output results/experiment_009_coreg_cohort.csv
+
+      - name: Enforce Stage A information boundary and coregistration gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_009_stage_a.json").read_text())
+          if report["experiment"] != "009" or report["preregistration_issue"] != 27:
+              raise SystemExit("wrong Experiment 009 provenance")
+          if report["stage"] != "A-outcome-blind-coregistration-preflight":
+              raise SystemExit("wrong Experiment 009 stage")
+          if report["functional_values_read"] is not False:
+              raise SystemExit("functional values were read during Stage A")
+          if report["h01_or_connectivity_accessed"] is not False:
+              raise SystemExit("connectivity was accessed during Stage A")
+
+          asset = report["asset"]
+          if asset["dandiset_id"] != "000402" or asset["version"] != "draft":
+              raise SystemExit("DANDI source changed")
+          expected_path = "sub-17797/sub-17797_ses-9-scan-4_behavior+image+ophys.nwb"
+          if asset["asset_path"] != expected_path:
+              raise SystemExit("frozen DANDI asset changed")
+          if asset["asset_size_bytes"] <= 0:
+              raise SystemExit("invalid DANDI asset size")
+          if asset["digest"] is None:
+              raise SystemExit("DANDI asset digest metadata missing")
+
+          nwb = report["nwb"]
+          if nwb["functional_values_read"] is not False:
+              raise SystemExit("NWB scanner reports functional value access")
+          forbidden_fragments = ("/data", "/timestamps", "/start_time", "/stop_time")
+          for path in nwb["value_read_paths"]:
+              if any(fragment in path for fragment in forbidden_fragments):
+                  raise SystemExit(f"forbidden Stage A value read: {path}")
+
+          planes = nwb["plane_segmentations"]
+          if not planes:
+              raise SystemExit("no PlaneSegmentation tables found")
+          if not any(row.get("pt_root_id", {}).get("present") for row in planes):
+              raise SystemExit("no pt_root_id coregistration column found")
+          if not nwb["roi_response_series_metadata_only"]:
+              raise SystemExit("no RoiResponseSeries metadata found")
+          if not nwb["stimulus_interval_metadata_only"]:
+              raise SystemExit("no stimulus interval metadata found")
+
+          coreg = nwb["coregistration"]
+          if coreg["root_id_precision_safe"] is not True:
+              raise SystemExit("pt_root_id representation is not safe for exact structural identity")
+          if coreg["candidate_rows"] <= 0 or not coreg["candidate_manifest_sha256"]:
+              raise SystemExit("no exact token-free structural cohort manifest could be frozen")
+          if not Path("results/experiment_009_coreg_cohort.csv").exists():
+              raise SystemExit("coregistration cohort manifest missing")
+          print("Experiment 009 Stage A outcome-blind coregistration gate passed.")
+          PY
+
+      - name: Build Stage A audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_009_stage_a.json").read_text())
+          asset = report["asset"]
+          nwb = report["nwb"]
+          coreg = nwb["coregistration"]
+          matched = [
+              (p["name"], p["row_count"], p.get("pt_root_id", {}).get("non_null_count", 0),
+               p.get("pt_root_id", {}).get("unique_count", 0),
+               p.get("pt_root_id", {}).get("dtype"))
+              for p in nwb["plane_segmentations"]
+          ]
+          lines = [
+              "## Experiment 009 Stage A — token-free MICrONS structure/function preflight",
+              "",
+              "**No calcium, stimulus movie, trial-response, connectivity, or FCR outcome values were read.**",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Dandiset/version: `{asset['dandiset_id']}/{asset['version']}`",
+              f"- Frozen asset: `{asset['asset_path']}`",
+              f"- Asset bytes: `{asset['asset_size_bytes']}`",
+              f"- Asset digest metadata: `{asset['digest']}`",
+              f"- Plane segmentations: `{len(nwb['plane_segmentations'])}`",
+              f"- Exact coregistration candidate rows: `{coreg['candidate_rows']}`",
+              f"- Candidate manifest SHA-256: `{coreg['candidate_manifest_sha256']}`",
+              f"- Root-ID exact-integer representation safe: `{coreg['root_id_precision_safe']}`",
+              f"- RoiResponseSeries discovered (metadata only): `{len(nwb['roi_response_series_metadata_only'])}`",
+              f"- Stimulus interval tables discovered (metadata only): `{len(nwb['stimulus_interval_metadata_only'])}`",
+              "",
+              "### Plane metadata",
+              "| Plane | ROI rows | Root-ID rows | Unique root IDs | Root dtype |",
+              "|---|---:|---:|---:|---|",
+          ]
+          for plane, rows, linked, unique, dtype in matched:
+              lines.append(f"| {plane} | {rows} | {linked} | {unique} | {dtype} |")
+          lines.extend([
+              "",
+              "This is E0 plumbing only. It freezes a token-free structure↔ROI identity bridge before any functional response value is inspected. It is not evidence for functional fidelity.",
+          ])
+          text = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(text, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(text)
+          print(text)
+          PY
+
+      - name: Publish merged Stage A audit to Issue 27
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 27,
+              body: fs.readFileSync('run-comment.md', 'utf8'),
+            });
+
+      - name: Upload Stage A audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-009-preflight-${{ github.run_id }}
+          path: |
+            results/experiment_009_stage_a.json
+            results/experiment_009_coreg_cohort.csv
+            run-comment.md
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6

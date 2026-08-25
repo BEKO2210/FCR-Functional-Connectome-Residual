@@ -6,16 +6,26 @@ on:
     paths:
       - ".github/workflows/experiment-010-roi-unit-em-bridge.yml"
       - "src/fcr/data/microns_roi_unit_bridge.py"
+      - "src/fcr/data/microns_asset_identity.py"
+      - "src/fcr/data/microns_roi_unit_bridge_live.py"
+      - "src/fcr/data/microns_v343_coreg.py"
       - "experiments/010_microns_roi_unit_bridge.py"
       - "tests/test_microns_roi_unit_bridge.py"
+      - "tests/test_microns_asset_identity.py"
+      - "tests/test_microns_v343_coreg.py"
       - "pyproject.toml"
   push:
     branches: [main]
     paths:
       - ".github/workflows/experiment-010-roi-unit-em-bridge.yml"
       - "src/fcr/data/microns_roi_unit_bridge.py"
+      - "src/fcr/data/microns_asset_identity.py"
+      - "src/fcr/data/microns_roi_unit_bridge_live.py"
+      - "src/fcr/data/microns_v343_coreg.py"
       - "experiments/010_microns_roi_unit_bridge.py"
       - "tests/test_microns_roi_unit_bridge.py"
+      - "tests/test_microns_asset_identity.py"
+      - "tests/test_microns_v343_coreg.py"
       - "pyproject.toml"
 
 permissions:
@@ -90,9 +100,17 @@ jobs:
           set -euo pipefail
           ruff check \
             src/fcr/data/microns_roi_unit_bridge.py \
+            src/fcr/data/microns_asset_identity.py \
+            src/fcr/data/microns_roi_unit_bridge_live.py \
+            src/fcr/data/microns_v343_coreg.py \
             experiments/010_microns_roi_unit_bridge.py \
-            tests/test_microns_roi_unit_bridge.py
-          pytest -q tests/test_microns_roi_unit_bridge.py
+            tests/test_microns_roi_unit_bridge.py \
+            tests/test_microns_asset_identity.py \
+            tests/test_microns_v343_coreg.py
+          pytest -q \
+            tests/test_microns_roi_unit_bridge.py \
+            tests/test_microns_asset_identity.py \
+            tests/test_microns_v343_coreg.py
 
       - name: Run frozen token-free identity preflight
         shell: bash
@@ -121,6 +139,8 @@ jobs:
               raise SystemExit("wrong Experiment 010 stage")
           if report["evidence_level"] != "E0-plumbing-only":
               raise SystemExit("Experiment 010 evidence level changed")
+          if report["reconciliation_comments"] != [5404679857, 5408791124]:
+              raise SystemExit("Experiment 010 reconciliation provenance changed")
           if report["functional_values_read"] is not False:
               raise SystemExit("functional values were read")
           if report["connectivity_accessed"] is not False:
@@ -138,6 +158,8 @@ jobs:
           nwb = report["nwb"]
           if nwb["session"] != 9 or nwb["scan_idx"] != 4:
               raise SystemExit("NWB session/scan contradicts preregistration")
+          if nwb["session_identity_source"] != "frozen-dandi-asset-path":
+              raise SystemExit("unexpected session/scan identity source")
           if nwb["functional_values_read"] is not False:
               raise SystemExit("NWB scanner reports functional-value access")
           if nwb["total_roi_rows"] <= 0:
@@ -168,11 +190,15 @@ jobs:
               raise SystemExit("no NWB ROI resolved through ScanUnit")
 
           release = report["release_coregistration"]
-          expected_release_url = (
-              "https://bossdb-open-data.s3.amazonaws.com/iarpa_microns/minnie/"
-              "functional_coregistration/func_unit_em_match_release.csv"
+          expected_data_url = (
+              "https://storage.googleapis.com/mat_dbs/public/minnie65_phase3_v1/v343/"
+              "func_unit_em_match_release_merged.csv.gz"
           )
-          expected_schema = [
+          expected_header_url = (
+              "https://storage.googleapis.com/mat_dbs/public/minnie65_phase3_v1/v343/"
+              "func_unit_em_match_release_merged_header.csv"
+          )
+          expected_fields = {
               "id",
               "valid",
               "pt_position_x",
@@ -183,13 +209,27 @@ jobs:
               "session",
               "scan_idx",
               "unit_id",
-          ]
-          if release["url"] != expected_release_url:
-              raise SystemExit("v117 functional coregistration source changed")
-          if release["schema"] != expected_schema:
-              raise SystemExit("v117 functional coregistration schema changed")
-          if release["size_bytes"] <= 0 or not release["sha256"] or release["source_rows"] <= 0:
-              raise SystemExit("v117 release provenance incomplete")
+          }
+          if release["archive_materialization_version"] != 343:
+              raise SystemExit("wrong archived materialization version")
+          if release["table"] != "func_unit_em_match_release":
+              raise SystemExit("archived coregistration table changed")
+          if release["data_url"] != expected_data_url or release["header_url"] != expected_header_url:
+              raise SystemExit("v343 archive source changed")
+          if release["reconciliation_comment"] != 5408791124:
+              raise SystemExit("v343 source reconciliation provenance changed")
+          if len(release["schema"]) != 10 or set(release["schema"]) != expected_fields:
+              raise SystemExit("v343 functional coregistration schema changed")
+          if set(release["schema_types"]) != expected_fields:
+              raise SystemExit("v343 functional coregistration type schema changed")
+          if (
+              release["data_size_bytes"] <= 0
+              or release["header_size_bytes"] <= 0
+              or not release["data_sha256"]
+              or not release["header_sha256"]
+              or release["source_rows"] <= 0
+          ):
+              raise SystemExit("v343 archive provenance incomplete")
           accounted = (
               release["exact_release_match_roi_rows"]
               + release["unmatched_release_roi_rows"]
@@ -218,7 +258,7 @@ jobs:
               raise SystemExit("cohort manifest hash mismatch")
           with cohort_path.open(newline="", encoding="utf-8") as handle:
               reader = csv.DictReader(handle)
-              expected_fields = [
+              expected_manifest_fields = [
                   "asset_path",
                   "plane",
                   "roi_id",
@@ -233,7 +273,7 @@ jobs:
                   "pt_position_z",
                   "coreg_source",
               ]
-              if reader.fieldnames != expected_fields:
+              if reader.fieldnames != expected_manifest_fields:
                   raise SystemExit("cohort manifest schema changed")
               rows = list(reader)
           if len(rows) != cohort["rows"]:
@@ -283,15 +323,16 @@ jobs:
               f"- Total NWB ROI rows: `{nwb['total_roi_rows']}`",
               f"- ScanUnit exact ROI→unit matches: `{scanunit['exact_match_roi_rows']}`",
               f"- ScanUnit unmapped ROIs: `{scanunit['unmapped_roi_rows']}`",
-              f"- v117 release exact unit→EM matches: `{release['exact_release_match_roi_rows']}`",
-              f"- v117 release unmatched ROIs: `{release['unmatched_release_roi_rows']}`",
-              f"- v117 release ambiguous ROIs: `{release['ambiguous_release_roi_rows']}`",
+              f"- v343/v117 exact unit→EM matches: `{release['exact_release_match_roi_rows']}`",
+              f"- v343/v117 unmatched ROIs: `{release['unmatched_release_roi_rows']}`",
+              f"- v343/v117 ambiguous ROIs: `{release['ambiguous_release_roi_rows']}`",
               f"- Duplicate structural roots excluded: `{cohort['duplicate_structural_roots']}`",
               f"- ROI rows excluded for duplicate root: `{cohort['roi_rows_excluded_for_duplicate_root']}`",
               f"- Final one-to-one cohort rows: `{cohort['rows']}`",
               f"- Cohort manifest SHA-256: `{cohort['manifest_sha256']}`",
               f"- ScanUnit SHA-256: `{scanunit['sha256']}`",
-              f"- v117 release SHA-256: `{release['sha256']}`",
+              f"- v343 data SHA-256: `{release['data_sha256']}`",
+              f"- v343 header SHA-256: `{release['header_sha256']}`",
               "",
               "This is E0 identity plumbing only. It does not authorize or constitute a functional-fidelity result.",
           ]

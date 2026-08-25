@@ -1,0 +1,250 @@
+name: FCR Experiment 012 Neuron Identity Bridge
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/experiment-012-neuron-identity-bridge.yml"
+      - "src/fcr/data/microns_neuron_identity.py"
+      - "experiments/012_microns_neuron_identity_bridge.py"
+      - "tests/test_microns_neuron_identity.py"
+      - "docs/EXPERIMENT_012_NEURON_IDENTITY.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-012-neuron-identity-bridge.yml"
+      - "src/fcr/data/microns_neuron_identity.py"
+      - "experiments/012_microns_neuron_identity_bridge.py"
+      - "tests/test_microns_neuron_identity.py"
+      - "docs/EXPERIMENT_012_NEURON_IDENTITY.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fcr-experiment-012-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    name: Exact MICrONS functional-to-structural identity bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install frozen Experiment 012 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install \
+            "numpy==2.4.4" \
+            "pandas==2.3.3" \
+            "pytest==9.1.1" \
+            "ruff==0.16.4"
+          python -m pip install -e . --no-deps
+
+      - name: Lint and run Experiment 012 boundary tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check \
+            src/fcr/data/microns_neuron_identity.py \
+            experiments/012_microns_neuron_identity_bridge.py \
+            tests/test_microns_neuron_identity.py
+          pytest -q tests/test_microns_neuron_identity.py
+
+      - name: Download frozen functional and structural inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/experiment_012 results
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/record/6363348/files/211019_vignette_functional_analysis_data.tgz" \
+            -o data/experiment_012/211019_vignette_functional_analysis_data.tgz
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_valence_v185.csv?download=1" \
+            -o data/experiment_012/soma_valence_v185.csv
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_subgraph_synapses_spines_v185.csv?download=1" \
+            -o data/experiment_012/soma_subgraph_synapses_spines_v185.csv
+          printf '%s  %s\n' \
+            'bcb0d4f678909fbd481ac0b01242ae5c' 'data/experiment_012/211019_vignette_functional_analysis_data.tgz' \
+            'b7c349b1ecbdad46185bb98d88b96d20' 'data/experiment_012/soma_valence_v185.csv' \
+            '5bbb8ff59dcad4ccea6d46930920cd04' 'data/experiment_012/soma_subgraph_synapses_spines_v185.csv' \
+            > data/experiment_012/checksums.md5
+          md5sum --check --strict data/experiment_012/checksums.md5
+
+      - name: Run frozen Experiment 012 exact-ID bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          python experiments/012_microns_neuron_identity_bridge.py \
+            --archive data/experiment_012/211019_vignette_functional_analysis_data.tgz \
+            --soma data/experiment_012/soma_valence_v185.csv \
+            --synapses data/experiment_012/soma_subgraph_synapses_spines_v185.csv \
+            --output results/experiment_012_identity.json \
+            --manifest results/experiment_012_matched_segment_ids.csv
+
+      - name: Enforce Experiment 012 information-boundary and identity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import hashlib
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_012_identity.json").read_text())
+          manifest_path = Path("results/experiment_012_matched_segment_ids.csv")
+          manifest = manifest_path.read_bytes()
+
+          if report["experiment"] != "012" or report["preregistration_issue"] != 33:
+              raise SystemExit("wrong Experiment 012 provenance")
+          if report["evidence_level"] != "E0-functional-structural-identity-bridge":
+              raise SystemExit("Experiment 012 evidence level changed")
+          if report["allen_reference_commit"] != "3f53e35e2bfd3063469dcbab0e1dedce5a82e3ca":
+              raise SystemExit("Allen reference commit changed")
+
+          source = report["functional_source"]
+          if source["archive_md5"] != "bcb0d4f678909fbd481ac0b01242ae5c":
+              raise SystemExit("functional archive MD5 changed")
+          if source["archive_sha256"] != "5ee95299b1955832f3f7b07defcea842f95bdd0bb351cb9828581f96b96d868b":
+              raise SystemExit("functional archive SHA-256 changed")
+          if source["nested_sha256"] != "be972c2468bb4c32cca508870da02082697d9f3a37ce649743c21ce6c5f7a5b4":
+              raise SystemExit("nested functional archive SHA-256 changed")
+          if source["neuron_sha256"] != "0327f71c3dfa85139a2185964d69b868e7e2370b260315baeb999a915052cdc1":
+              raise SystemExit("Neuron.pkl SHA-256 changed")
+          if source["neuron_size_bytes"] != 9009:
+              raise SystemExit("Neuron.pkl size changed")
+
+          structural = report["structural_source"]
+          if structural["soma_observed_md5"] != "b7c349b1ecbdad46185bb98d88b96d20":
+              raise SystemExit("soma MD5 changed")
+          if structural["synapse_observed_md5"] != "5bbb8ff59dcad4ccea6d46930920cd04":
+              raise SystemExit("synapse MD5 changed")
+          if report["structural_identity_count"] != 334:
+              raise SystemExit("frozen structural graph is not 334 nodes")
+
+          functional = report["functional_identity_count"]
+          structural_count = report["structural_identity_count"]
+          overlap = report["exact_overlap_count"]
+          if overlap + report["functional_only_count"] != functional:
+              raise SystemExit("functional identity partition is inconsistent")
+          if overlap + report["structural_only_count"] != structural_count:
+              raise SystemExit("structural identity partition is inconsistent")
+
+          if hashlib.sha256(manifest).hexdigest() != report["matched_manifest_sha256"]:
+              raise SystemExit("matched identity manifest hash mismatch")
+          rows = list(csv.DictReader(manifest.decode("ascii").splitlines()))
+          if [int(row["segment_id"]) for row in rows] != sorted(
+              int(row["segment_id"]) for row in rows
+          ):
+              raise SystemExit("matched identity manifest is not sorted")
+          if len(rows) != overlap:
+              raise SystemExit("matched identity manifest row count mismatch")
+
+          false_flags = (
+              "duplicate_functional_ids_seen",
+              "ease_trace_opened",
+              "ease_tuning_opened",
+              "stimulus_opened",
+              "functional_measurements_interpreted",
+              "connectivity_used_for_cohort_selection",
+              "fcr_outcomes_used_for_cohort_selection",
+          )
+          for key in false_flags:
+              if report[key] is not False:
+                  raise SystemExit(f"Experiment 012 boundary flag violated: {key}")
+          if report["identity_match_rule"] != "exact-segment-id-equality-only":
+              raise SystemExit("identity match rule changed")
+
+          print("Experiment 012 exact identity and information-boundary gate passed.")
+          PY
+
+      - name: Build Experiment 012 audit summary
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_012_identity.json").read_text())
+          lines = [
+              "## Experiment 012 — MICrONS v185 exact identity bridge",
+              "",
+              "**No calcium, tuning, stimulus, or functional-response measurement was analyzed.**",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Functional-vignette segment IDs: `{report['functional_identity_count']}`",
+              f"- Frozen structural graph IDs: `{report['structural_identity_count']}`",
+              f"- Exact ID overlap: **`{report['exact_overlap_count']}`**",
+              f"- Functional-only IDs: `{report['functional_only_count']}`",
+              f"- Structural-only IDs: `{report['structural_only_count']}`",
+              f"- Matched manifest SHA-256: `{report['matched_manifest_sha256']}`",
+              "",
+              "This is E0 identity/cohort plumbing only. It does not establish functional fidelity and does not authorize analysis of EASETrace/EASETuning values.",
+          ]
+          text = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(text, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(text)
+          print(text)
+          PY
+
+      - name: Upload Experiment 012 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-012-identity-${{ github.run_id }}
+          path: |
+            results/experiment_012_identity.json
+            results/experiment_012_matched_segment_ids.csv
+            data/experiment_012/checksums.md5
+            run-comment.md
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  publish:
+    name: Publish merged Experiment 012 audit
+    needs: bridge
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.bridge.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Download successful Experiment 012 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fcr-experiment-012-identity-${{ github.run_id }}
+
+      - name: Publish audit to Issue 33
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 33,
+              body: fs.readFileSync('run-comment.md', 'utf8'),
+            });

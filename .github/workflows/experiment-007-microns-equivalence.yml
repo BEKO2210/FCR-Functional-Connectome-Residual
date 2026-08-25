@@ -1,0 +1,180 @@
+name: FCR Experiment 007 MICrONS Solver Equivalence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/experiment-007-microns-equivalence.yml"
+      - "src/fcr/robust_models.py"
+      - "src/fcr/experiment_007.py"
+      - "experiments/007_microns_solver_equivalence.py"
+      - "tests/test_robust_models.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-007-microns-equivalence.yml"
+      - "src/fcr/robust_models.py"
+      - "src/fcr/experiment_007.py"
+      - "experiments/007_microns_solver_equivalence.py"
+      - "tests/test_robust_models.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: fcr-experiment-007-microns-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  microns-equivalence:
+    name: Synthetic gates and frozen MICrONS replay
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install frozen numerical runtime and test tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "numpy==2.5.2" "pandas==3.0.5" "pytest==9.1.1" "ruff==0.16.4"
+          python -m pip install -e . --no-deps
+
+      - name: Lint Experiment 007 implementation
+        run: ruff check src/fcr/robust_models.py src/fcr/experiment_007.py experiments/007_microns_solver_equivalence.py tests/test_robust_models.py
+
+      - name: Run synthetic numerical gates
+        run: pytest -q tests/test_robust_models.py
+
+      - name: Download frozen MICrONS public inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/public/microns_l23
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_valence_v185.csv?download=1" \
+            -o data/public/microns_l23/soma_valence_v185.csv
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_subgraph_synapses_spines_v185.csv?download=1" \
+            -o data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv
+
+      - name: Verify Experiment 005 MICrONS MD5s
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd data/public/microns_l23
+          printf '%s  %s\n' \
+            'b7c349b1ecbdad46185bb98d88b96d20' 'soma_valence_v185.csv' \
+            '5bbb8ff59dcad4ccea6d46930920cd04' 'soma_subgraph_synapses_spines_v185.csv' \
+            > checksums.md5
+          md5sum --check checksums.md5
+
+      - name: Verify untouched Experiment 005 evaluation core
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object src/fcr/nested_cv.py)" = "7eea99f54a3e3fd964e7e00081daf3643270f7e7"
+          test "$(git hash-object src/fcr/advanced_models.py)" = "26f235cae5e3707622a5d26ddbd620fdcb8a7b6b"
+          test "$(git hash-object src/fcr/metrics.py)" = "a0fa7f6fbdcbe5266449050c344887fc1d59e6e9"
+          test "$(git hash-object src/fcr/models.py)" = "8377b36e7bd7d34e83180c3ff2b3975df0c4cc45"
+          test "$(git hash-object src/fcr/splits.py)" = "09ad5f79a3fdf7800d7742173bc0206834e0bfad"
+          test "$(git hash-object src/fcr/schema.py)" = "f4ac9c69a2af1526dba3b5701cebe0e2c1552987"
+
+      - name: Run original and damped MICrONS nested-CV replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/007_microns_solver_equivalence.py \
+            --soma data/public/microns_l23/soma_valence_v185.csv \
+            --synapses data/public/microns_l23/soma_subgraph_synapses_spines_v185.csv \
+            --output results/experiment_007_microns_equivalence.json
+
+      - name: Enforce preregistered MICrONS equivalence gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_007_microns_equivalence.json").read_text())
+          if report["experiment"] != "007" or report["preregistration_issue"] != 22:
+              raise SystemExit("wrong Experiment 007 provenance")
+          if report["h01_accessed"] is not False:
+              raise SystemExit("MICrONS development stage must not access H01")
+          if report["graph"]["nodes"] != 334:
+              raise SystemExit("unexpected MICrONS graph")
+          equivalence = report["equivalence"]
+          if equivalence["criterion_met"] is not True:
+              raise SystemExit("solver equivalence criterion not met")
+          if equivalence["residual_tolerance_bits"] != 0.1:
+              raise SystemExit("equivalence tolerance changed")
+          if equivalence["max_fold_residual_difference_bits"] > 0.1:
+              raise SystemExit("fold residual equivalence failed")
+          if equivalence["max_aggregate_residual_difference_bits"] > 0.1:
+              raise SystemExit("aggregate residual equivalence failed")
+          if equivalence["best_non_global_family"] != "spatial":
+              raise SystemExit("MICrONS family ordering changed")
+          if equivalence["experiment_005_criterion_met"] is not True:
+              raise SystemExit("Experiment 005 disposition changed")
+          print("Experiment 007 MICrONS solver equivalence gate passed.")
+          PY
+
+      - name: Build MICrONS equivalence summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_007_microns_equivalence.json").read_text())
+          eq = report["equivalence"]
+          text = (
+              "## Experiment 007 MICrONS solver-equivalence result\n\n"
+              f"- Max fold residual difference: `{eq['max_fold_residual_difference_bits']:.9f}` bits\n"
+              f"- Max aggregate residual difference: `{eq['max_aggregate_residual_difference_bits']:.9f}` bits\n"
+              f"- Frozen tolerance: `{eq['residual_tolerance_bits']}` bit\n"
+              f"- Best non-global family unchanged: `{eq['best_non_global_family']}`\n"
+              f"- Experiment 005 criterion unchanged: `{eq['experiment_005_criterion_met']}`\n"
+              "- H01 accessed in this stage: `False`\n\n"
+              "This is numerical solver validation on MICrONS, not an H01 biological result.\n"
+          )
+          Path("run-comment.md").write_text(text, encoding="utf-8")
+          print(text)
+          PY
+
+      - name: Publish merged MICrONS gate to Issue 22
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('run-comment.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 22,
+              body,
+            });
+
+      - name: Upload Experiment 007 MICrONS equivalence artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-007-microns-${{ github.run_id }}
+          path: |
+            results/experiment_007_microns_equivalence.json
+            run-comment.md
+            data/public/microns_l23/checksums.md5
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6

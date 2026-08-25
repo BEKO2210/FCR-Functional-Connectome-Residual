@@ -8,6 +8,7 @@ stimulus-response array values.
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import io
 import json
@@ -22,24 +23,36 @@ import numpy as np
 DANDISET_ID = "000402"
 DANDISET_VERSION = "draft"
 FROZEN_ASSET_PATH = "sub-17797/sub-17797_ses-9-scan-4_behavior+image+ophys.nwb"
-NUCLEUS_DETECTION_URL = (
-    "https://bossdb-open-data.s3.amazonaws.com/iarpa_microns/minnie/minnie65/"
-    "nucleus_detection/nucleus_detection_v0.csv"
+V661_LOOKUP_VERSION = 661
+V661_LOOKUP_DATA_URL = (
+    "https://storage.googleapis.com/mat_dbs/public/minnie65_phase3_v1/v661/"
+    "nucleus_detection_lookup_v1_merged.csv.gz"
 )
-STATIC_NUCLEUS_COLUMNS = (
-    "id",
-    "valid",
-    "pt_supervoxel_id",
-    "pt_root_id",
-    "pt_position_x",
-    "pt_position_y",
-    "pt_position_z",
-    "volume",
+V661_LOOKUP_HEADER_URL = (
+    "https://storage.googleapis.com/mat_dbs/public/minnie65_phase3_v1/v661/"
+    "nucleus_detection_lookup_v1_merged_header.csv"
+)
+V661_LOOKUP_HEADER_SHA256 = "1d0042582aad1f14e47f7d4d33c0f2ce736d476d925e8a36744f021b580a2dd4"
+V661_LOOKUP_SCHEMA = (
+    ("id", "int64"),
+    ("volume", "float64"),
+    ("pt_root_id", "int64"),
+    ("orig_root_id", "int64"),
+    ("pt_supervoxel_id", "int64"),
+    ("pt_position_x", "int64"),
+    ("pt_position_y", "int64"),
+    ("pt_position_z", "int64"),
+    ("pt_position_lookup_x", "int64"),
+    ("pt_position_lookup_y", "int64"),
+    ("pt_position_lookup_z", "int64"),
 )
 MAX_EXACT_FLOAT_INTEGER = 2**53
-COREG_SOURCE = "exact-v117-pt-position"
+COREG_SOURCE = "exact-v661-corrected-lookup-position"
 LEGACY_CAVE_SOURCE = "manual_match_cave_nuclei_id"
 POSITION_RECONCILIATION_COMMENT = 5404210234
+V661_SOURCE_RECONCILIATION_COMMENT = 5404395140
+V661_SCHEMA_RECONCILIATION_COMMENT = 5404409253
+V661_ROOT_INTEGRITY_COMMENT = 5404415920
 
 _ALLOWED_VALUE_PATHS = {
     "/identifier",
@@ -57,6 +70,11 @@ _ALLOWED_PLANE_VALUE_COLUMNS = {
     "pt_z_position",
 }
 _POSITION_COLUMNS = ("pt_x_position", "pt_y_position", "pt_z_position")
+_LOOKUP_POSITION_COLUMNS = (
+    "pt_position_lookup_x",
+    "pt_position_lookup_y",
+    "pt_position_lookup_z",
+)
 
 
 @dataclass(frozen=True)
@@ -338,7 +356,7 @@ def cohort_csv_bytes(rows: list[dict[str, object]]) -> bytes:
             "pt_position_y",
             "pt_position_z",
             "nucleus_id",
-            "v117_pt_root_id",
+            "v661_pt_root_id",
             "coreg_source",
         ],
         lineterminator="\n",
@@ -392,7 +410,7 @@ def _position_candidates_for_plane(
     if not required_positions.issubset(plane.keys()):
         if ragged.rows_single or ragged.rows_ambiguous:
             raise RuntimeError(
-                "legacy structural matches exist without complete v117 position columns"
+                "legacy structural matches exist without complete structural position columns"
             )
         return [], {
             "position_columns_present": False,
@@ -446,7 +464,7 @@ def _position_candidates_for_plane(
             continue
         if present != 3:
             rows_partial += 1
-            raise RuntimeError("structural candidate has only a partial v117 point coordinate")
+            raise RuntimeError("structural candidate has only a partial point coordinate")
         if ragged.row_is_ambiguous[row_index]:
             rows_ambiguous += 1
             continue
@@ -599,12 +617,12 @@ def scan_hdf5_metadata(
         "roi_response_series_metadata_only": response_series,
         "stimulus_interval_metadata_only": interval_reports,
         "coregistration": {
-            "canonical_identity": "nucleus_detection_v0.id",
+            "canonical_identity": "nucleus_detection_lookup_v1.id",
             "coreg_source": COREG_SOURCE,
             "legacy_cave_id_source": LEGACY_CAVE_SOURCE,
             "legacy_cave_id_precision_safe": all_legacy_ids_safe,
             "nwb_pt_root_id_exact_integer_safe": all_root_ids_exact,
-            "pre_static_candidate_rows": len(candidate_rows),
+            "pre_lookup_candidate_rows": len(candidate_rows),
         },
         "value_read_paths": value_read_paths,
         "functional_values_read": False,
@@ -620,15 +638,15 @@ def _parse_exact_decimal(
 ) -> int:
     value = text.strip()
     if not value or value.lower() in {"nan", "none", "null"}:
-        raise RuntimeError(f"static nucleus table has missing {field}")
+        raise RuntimeError(f"archived lookup has missing {field}")
     if any(character in value.lower() for character in ("e", ".")):
-        raise RuntimeError(f"static nucleus table {field} is not exact decimal integer text")
+        raise RuntimeError(f"archived lookup {field} is not exact decimal integer text")
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise RuntimeError(f"static nucleus table has invalid {field}: {value!r}") from exc
+        raise RuntimeError(f"archived lookup has invalid {field}: {value!r}") from exc
     if parsed < 0 or (parsed == 0 and not allow_zero):
-        raise RuntimeError(f"static nucleus table has invalid non-positive {field}")
+        raise RuntimeError(f"archived lookup has invalid non-positive {field}")
     return parsed
 
 
@@ -640,65 +658,87 @@ def _candidate_point(row: dict[str, object]) -> tuple[int, int, int]:
     )
 
 
-def validate_static_nucleus_table(
-    raw_csv: bytes,
+def parse_v661_lookup_header(raw_header: bytes) -> tuple[str, ...]:
+    """Validate the frozen v661 schema before the archived data body is read."""
+    digest = hashlib.sha256(raw_header).hexdigest()
+    if digest != V661_LOOKUP_HEADER_SHA256:
+        raise RuntimeError("v661 lookup header SHA-256 changed")
+
+    reader = csv.reader(io.StringIO(raw_header.decode("utf-8-sig")))
+    schema: list[tuple[str, str]] = []
+    for row in reader:
+        if not row:
+            continue
+        if len(row) != 2:
+            raise RuntimeError("v661 lookup header row is not column,type")
+        schema.append((row[0].strip(), row[1].strip()))
+    if tuple(schema) != V661_LOOKUP_SCHEMA:
+        raise RuntimeError("v661 lookup schema differs from frozen header-only probe")
+    return tuple(column for column, _dtype in schema)
+
+
+def validate_v661_lookup_table(
+    raw_gzip: bytes,
+    *,
+    columns: tuple[str, ...],
     candidate_rows: list[dict[str, object]],
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """Join ROI candidates to the public v117 table by exact EM-voxel point."""
+    """Join frozen candidates to v661 corrected lookup points exactly."""
+    if columns != tuple(column for column, _dtype in V661_LOOKUP_SCHEMA):
+        raise RuntimeError("v661 lookup columns are not the frozen schema")
+
+    try:
+        raw_csv = gzip.decompress(raw_gzip)
+    except (OSError, EOFError) as exc:
+        raise RuntimeError("v661 lookup data is not valid gzip") from exc
+
     target_points = {_candidate_point(row) for row in candidate_rows}
     target_hits: Counter[tuple[int, int, int]] = Counter()
     target_rows: dict[tuple[int, int, int], tuple[int, int]] = {}
     total_rows = 0
 
-    text = io.StringIO(raw_csv.decode("utf-8-sig"))
-    reader = csv.reader(text)
+    reader = csv.reader(io.StringIO(raw_csv.decode("utf-8-sig")))
     for raw_row in reader:
         if not raw_row:
             continue
         total_rows += 1
-        if len(raw_row) != len(STATIC_NUCLEUS_COLUMNS):
-            raise RuntimeError(
-                "static nucleus table row does not match frozen eight-column schema"
-            )
-        source_row = dict(zip(STATIC_NUCLEUS_COLUMNS, raw_row, strict=True))
-        point = (
-            _parse_exact_decimal(
-                source_row["pt_position_x"], field="pt_position_x", allow_zero=True
-            ),
-            _parse_exact_decimal(
-                source_row["pt_position_y"], field="pt_position_y", allow_zero=True
-            ),
-            _parse_exact_decimal(
-                source_row["pt_position_z"], field="pt_position_z", allow_zero=True
-            ),
+        if len(raw_row) != len(columns):
+            raise RuntimeError("v661 lookup data row does not match frozen header")
+        source = dict(zip(columns, raw_row, strict=True))
+        lookup_point = tuple(
+            _parse_exact_decimal(source[column], field=column, allow_zero=True)
+            for column in _LOOKUP_POSITION_COLUMNS
         )
-        if point not in target_points:
+        if lookup_point not in target_points:
             continue
-        nucleus_id = _parse_exact_decimal(source_row["id"], field="id")
+        nucleus_id = _parse_exact_decimal(source["id"], field="id")
         root_id = _parse_exact_decimal(
-            source_row["pt_root_id"], field="pt_root_id", allow_zero=True
+            source["pt_root_id"], field="pt_root_id", allow_zero=True
         )
-        target_hits[point] += 1
-        target_rows[point] = (nucleus_id, root_id)
+        target_hits[lookup_point] += 1
+        target_rows[lookup_point] = (nucleus_id, root_id)
 
     missing = sorted(target_points - set(target_hits))
     nonunique = sorted(point for point, count in target_hits.items() if count != 1)
-    exact_join_ok = not missing and not nonunique and bool(target_points)
+    exact_join_ok = bool(target_points) and not missing and not nonunique
+
+    nonpositive_root_points: list[tuple[int, int, int]] = []
+    if exact_join_ok:
+        nonpositive_root_points = sorted(
+            point for point in target_points if target_rows[point][1] <= 0
+        )
+    root_integrity_ok = exact_join_ok and not nonpositive_root_points
 
     joined_rows: list[dict[str, object]] = []
-    no_positive_root_points: set[tuple[int, int, int]] = set()
-    if exact_join_ok:
+    if root_integrity_ok:
         for row in candidate_rows:
             point = _candidate_point(row)
             nucleus_id, root_id = target_rows[point]
-            if root_id <= 0:
-                no_positive_root_points.add(point)
-                continue
             joined_rows.append(
                 {
                     **row,
                     "nucleus_id": nucleus_id,
-                    "v117_pt_root_id": root_id,
+                    "v661_pt_root_id": root_id,
                 }
             )
 
@@ -709,37 +749,39 @@ def validate_static_nucleus_table(
     validated_rows = [
         row for row in joined_rows if int(row["nucleus_id"]) not in duplicated_nucleus_ids
     ]
+    validation_ok = root_integrity_ok and bool(validated_rows)
 
-    validation_ok = exact_join_ok and bool(validated_rows)
     return validated_rows, {
-        "url": NUCLEUS_DETECTION_URL,
-        "file_format": "headerless-positional-v117-eight-columns",
-        "column_order": list(STATIC_NUCLEUS_COLUMNS),
-        "join_key": ["pt_position_x", "pt_position_y", "pt_position_z"],
-        "coordinate_space": "v117-em-voxels-x4nm-y4nm-z40nm",
-        "sha256": hashlib.sha256(raw_csv).hexdigest(),
+        "version": V661_LOOKUP_VERSION,
+        "view": "nucleus_detection_lookup_v1",
+        "data_url": V661_LOOKUP_DATA_URL,
+        "header_url": V661_LOOKUP_HEADER_URL,
+        "header_sha256": V661_LOOKUP_HEADER_SHA256,
+        "data_sha256": hashlib.sha256(raw_gzip).hexdigest(),
+        "data_compressed_bytes": len(raw_gzip),
+        "data_uncompressed_bytes": len(raw_csv),
+        "schema": [[column, dtype] for column, dtype in V661_LOOKUP_SCHEMA],
+        "join_from": ["pt_x_position", "pt_y_position", "pt_z_position"],
+        "join_to": list(_LOOKUP_POSITION_COLUMNS),
+        "coordinate_space": "em-voxels-x4nm-y4nm-z40nm",
         "source_rows": total_rows,
+        "candidate_rows": len(candidate_rows),
         "candidate_unique_points": len(target_points),
         "matched_unique_points": len(target_hits),
         "missing_candidate_points": len(missing),
         "nonunique_candidate_points": len(nonunique),
-        "candidate_points_without_positive_v117_root": len(no_positive_root_points),
-        "roi_rows_excluded_without_positive_v117_root": sum(
-            1 for row in candidate_rows if _candidate_point(row) in no_positive_root_points
-        ),
+        "exact_lookup_join_ok": exact_join_ok,
+        "nonpositive_v661_root_points": len(nonpositive_root_points),
+        "root_integrity_ok": root_integrity_ok,
         "duplicate_nucleus_identities": len(duplicated_nucleus_ids),
         "roi_rows_excluded_for_duplicate_nucleus": len(joined_rows) - len(validated_rows),
         "validated_cohort_rows": len(validated_rows),
-        "exact_position_join_ok": exact_join_ok,
         "validation_ok": validation_ok,
     }
 
 
-def _download_static_nucleus_table() -> bytes:
-    request = urllib.request.Request(
-        NUCLEUS_DETECTION_URL,
-        headers={"User-Agent": "fcr-experiment-009/1"},
-    )
+def _download_public_bytes(url: str) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": "fcr-experiment-009/1"})
     with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
         return response.read()
 
@@ -778,19 +820,25 @@ def run_dandi_preflight(output_json: str | Path, output_csv: str | Path) -> dict
                 asset_path=FROZEN_ASSET_PATH,
             )
 
-    static_csv = _download_static_nucleus_table()
-    validated_rows, static_report = validate_static_nucleus_table(static_csv, candidate_rows)
-    manifest_bytes = cohort_csv_bytes(validated_rows) if static_report["validation_ok"] else None
+    # Header is deliberately fetched and frozen-schema validated before data-body access.
+    lookup_header = _download_public_bytes(V661_LOOKUP_HEADER_URL)
+    columns = parse_v661_lookup_header(lookup_header)
+    lookup_data = _download_public_bytes(V661_LOOKUP_DATA_URL)
+    validated_rows, lookup_report = validate_v661_lookup_table(
+        lookup_data,
+        columns=columns,
+        candidate_rows=candidate_rows,
+    )
+
+    manifest_bytes = cohort_csv_bytes(validated_rows) if lookup_report["validation_ok"] else None
     coreg = nwb_report["coregistration"]
-    coreg["static_nucleus_validation"] = static_report
+    coreg["v661_lookup_validation"] = lookup_report
     coreg["candidate_rows"] = len(validated_rows) if manifest_bytes is not None else 0
     coreg["candidate_manifest_sha256"] = (
         hashlib.sha256(manifest_bytes).hexdigest() if manifest_bytes is not None else None
     )
-    coreg["duplicate_nucleus_identities"] = static_report[
-        "duplicate_nucleus_identities"
-    ]
-    coreg["roi_rows_excluded_for_duplicate_nucleus"] = static_report[
+    coreg["duplicate_nucleus_identities"] = lookup_report["duplicate_nucleus_identities"]
+    coreg["roi_rows_excluded_for_duplicate_nucleus"] = lookup_report[
         "roi_rows_excluded_for_duplicate_nucleus"
     ]
 
@@ -802,6 +850,9 @@ def run_dandi_preflight(output_json: str | Path, output_csv: str | Path) -> dict
         "duplicate_mapping_addendum_comment": 5404074984,
         "static_schema_reconciliation_comment": 5404134131,
         "position_join_reconciliation_comment": POSITION_RECONCILIATION_COMMENT,
+        "v661_source_reconciliation_comment": V661_SOURCE_RECONCILIATION_COMMENT,
+        "v661_schema_reconciliation_comment": V661_SCHEMA_RECONCILIATION_COMMENT,
+        "v661_root_integrity_comment": V661_ROOT_INTEGRITY_COMMENT,
         "asset": asset_report,
         "nwb": nwb_report,
         "h01_or_connectivity_accessed": False,

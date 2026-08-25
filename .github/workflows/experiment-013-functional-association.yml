@@ -44,10 +44,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install frozen runtime
+      - name: Install frozen runtime and test tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "numpy==2.5.2" "pandas==3.0.5"
+          python -m pip install "numpy==2.5.2" "pandas==3.0.5" ruff pytest
           python -m pip install -e .
 
       - name: Lint and run Experiment 013 boundary tests
@@ -92,6 +92,7 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
+
           r = json.loads(Path('results/experiment_013.json').read_text())
           if r['experiment'] != '013' or r['preregistration_issue'] != 35:
               raise SystemExit('wrong Experiment 013 provenance')
@@ -109,10 +110,10 @@ jobs:
               raise SystemExit('functional leakage into structural training')
           if r['structural_ranking_used_functional_values']:
               raise SystemExit('functional leakage into residual ranking')
-          primary = r['primary']
-          if primary['primary_min_improvement'] != 0.05 or primary['primary_max_p'] != 0.05:
+          p = r['primary']
+          if p['primary_min_improvement'] != 0.05 or p['primary_max_p'] != 0.05:
               raise SystemExit('primary threshold changed')
-          if primary['high_edge_count'] != primary['low_edge_count']:
+          if p['high_edge_count'] != p['low_edge_count']:
               raise SystemExit('unequal high/low edge budget')
           print('Experiment 013 frozen gate passed.')
           PY
@@ -123,6 +124,7 @@ jobs:
           python - <<'PY'
           import json, os
           from pathlib import Path
+
           r = json.loads(Path('results/experiment_013.json').read_text())
           p = r['primary']
           lines = [
@@ -152,7 +154,7 @@ jobs:
               f"- High tuned-status concordance: `{p['high_tuned_status_concordance']:.6f}`",
               f"- Random median tuned-status concordance: `{p['random_median_tuned_status_concordance']:.6f}`",
               '',
-              'EASETrace and Stimulus were not opened. This is association evidence only, not a causal or functional-preservation proof.',
+              'EASETrace and Stimulus were not opened. Association evidence only.',
           ]
           text = '\n'.join(lines) + '\n'
           Path('run-comment.md').write_text(text, encoding='utf-8')

@@ -13,7 +13,13 @@ from fcr.data.microns_functional_preflight import (
 
 
 class FakeDataset:
-    def __init__(self, value: object, *, shape: tuple[int, ...] | None = None, dtype: object = None):
+    def __init__(
+        self,
+        value: object,
+        *,
+        shape: tuple[int, ...] | None = None,
+        dtype: object = None,
+    ):
         self.value = np.asarray(value)
         self.shape = self.value.shape if shape is None else shape
         self.dtype = self.value.dtype if dtype is None else np.dtype(dtype)

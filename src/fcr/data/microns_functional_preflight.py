@@ -25,6 +25,16 @@ NUCLEUS_DETECTION_URL = (
     "https://bossdb-open-data.s3.amazonaws.com/iarpa_microns/minnie/minnie65/"
     "nucleus_detection/nucleus_detection_v0.csv"
 )
+STATIC_NUCLEUS_COLUMNS = (
+    "id",
+    "valid",
+    "pt_supervoxel_id",
+    "pt_root_id",
+    "pt_position_x",
+    "pt_position_y",
+    "pt_position_z",
+    "volume",
+)
 MAX_EXACT_FLOAT_INTEGER = 2**53
 COREG_SOURCE = "manual_match_cave_nuclei_id"
 
@@ -175,20 +185,18 @@ def _exact_positive_id(raw: Any) -> tuple[int | None, bool]:
     if isinstance(raw, np.generic):
         raw = raw.item()
 
-    if isinstance(raw, (int, np.integer)):
-        value = int(raw)
-        return (value, True) if value > 0 else (None, True)
+    if isinstance(raw, int):
+        return (raw, True) if raw > 0 else (None, True)
 
-    if isinstance(raw, (float, np.floating)):
-        value = float(raw)
-        if np.isnan(value):
+    if isinstance(raw, float):
+        if np.isnan(raw):
             return None, True
-        if not np.isfinite(value):
+        if not np.isfinite(raw):
             return None, False
-        if value <= 0:
+        if raw <= 0:
             return None, True
-        exact = value <= MAX_EXACT_FLOAT_INTEGER and value == np.floor(value)
-        return (int(value), True) if exact else (None, False)
+        exact = raw <= MAX_EXACT_FLOAT_INTEGER and raw == np.floor(raw)
+        return (int(raw), True) if exact else (None, False)
 
     text = _decode_scalar(raw).strip()
     if not text or text.lower() in {"nan", "none", "null"}:
@@ -488,7 +496,12 @@ def scan_hdf5_metadata(
     return report, deduplicated_rows if all_nucleus_ids_safe else []
 
 
-def _parse_exact_decimal(text: str, *, field: str) -> int:
+def _parse_exact_decimal(
+    text: str,
+    *,
+    field: str,
+    allow_zero: bool = False,
+) -> int:
     value = text.strip()
     if not value or value.lower() in {"nan", "none", "null"}:
         raise RuntimeError(f"static nucleus table has missing {field}")
@@ -498,8 +511,8 @@ def _parse_exact_decimal(text: str, *, field: str) -> int:
         parsed = int(value)
     except ValueError as exc:
         raise RuntimeError(f"static nucleus table has invalid {field}: {value!r}") from exc
-    if parsed <= 0:
-        raise RuntimeError(f"static nucleus table has non-positive {field}")
+    if parsed < 0 or (parsed == 0 and not allow_zero):
+        raise RuntimeError(f"static nucleus table has invalid non-positive {field}")
     return parsed
 
 
@@ -507,34 +520,50 @@ def validate_static_nucleus_table(
     raw_csv: bytes,
     candidate_rows: list[dict[str, object]],
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """Validate stable nucleus IDs against the public v117 static nucleus table."""
+    """Validate stable nucleus IDs against the headerless public v117 table."""
     target_ids = {int(row["nucleus_id"]) for row in candidate_rows}
     target_hits: Counter[int] = Counter()
     target_roots: dict[int, int] = {}
     total_rows = 0
 
     text = io.StringIO(raw_csv.decode("utf-8-sig"))
-    reader = csv.DictReader(text)
-    if reader.fieldnames is None or not {"id", "pt_root_id"}.issubset(reader.fieldnames):
-        raise RuntimeError("static nucleus table is missing id or pt_root_id")
-
-    for source_row in reader:
+    reader = csv.reader(text)
+    for raw_row in reader:
+        if not raw_row:
+            continue
         total_rows += 1
+        if len(raw_row) != len(STATIC_NUCLEUS_COLUMNS):
+            raise RuntimeError(
+                "static nucleus table row does not match frozen eight-column schema"
+            )
+        source_row = dict(zip(STATIC_NUCLEUS_COLUMNS, raw_row, strict=True))
         nucleus_id = _parse_exact_decimal(source_row["id"], field="id")
         if nucleus_id not in target_ids:
             continue
-        root_id = _parse_exact_decimal(source_row["pt_root_id"], field="pt_root_id")
+        root_id = _parse_exact_decimal(
+            source_row["pt_root_id"],
+            field="pt_root_id",
+            allow_zero=True,
+        )
         target_hits[nucleus_id] += 1
         target_roots[nucleus_id] = root_id
 
     missing = sorted(target_ids - set(target_hits))
     nonunique = sorted(nucleus_id for nucleus_id, count in target_hits.items() if count != 1)
-    validation_ok = not missing and not nonunique and bool(target_ids)
+    no_positive_root = sorted(
+        nucleus_id
+        for nucleus_id, count in target_hits.items()
+        if count == 1 and target_roots[nucleus_id] <= 0
+    )
+    eligible_ids = target_ids - set(no_positive_root)
+    validation_ok = not missing and not nonunique and bool(eligible_ids)
 
     validated_rows: list[dict[str, object]] = []
     if validation_ok:
         for row in candidate_rows:
             nucleus_id = int(row["nucleus_id"])
+            if nucleus_id not in eligible_ids:
+                continue
             validated_rows.append(
                 {
                     **row,
@@ -542,14 +571,22 @@ def validate_static_nucleus_table(
                 }
             )
 
+    excluded_rows = sum(
+        1 for row in candidate_rows if int(row["nucleus_id"]) in set(no_positive_root)
+    )
     return validated_rows, {
         "url": NUCLEUS_DETECTION_URL,
+        "file_format": "headerless-positional-v117-eight-columns",
+        "column_order": list(STATIC_NUCLEUS_COLUMNS),
         "sha256": hashlib.sha256(raw_csv).hexdigest(),
         "source_rows": total_rows,
         "candidate_unique_nucleus_ids": len(target_ids),
         "matched_unique_nucleus_ids": len(target_hits),
         "missing_candidate_ids": len(missing),
         "nonunique_candidate_ids": len(nonunique),
+        "candidate_ids_without_positive_v117_root": len(no_positive_root),
+        "roi_rows_excluded_without_positive_v117_root": excluded_rows,
+        "validated_cohort_rows": len(validated_rows),
         "validation_ok": validation_ok,
     }
 
@@ -617,6 +654,7 @@ def run_dandi_preflight(output_json: str | Path, output_csv: str | Path) -> dict
         "preregistration_issue": 27,
         "schema_reconciliation_comment": 5404064572,
         "duplicate_mapping_addendum_comment": 5404074984,
+        "static_schema_reconciliation_comment": 5404134131,
         "asset": asset_report,
         "nwb": nwb_report,
         "h01_or_connectivity_accessed": False,

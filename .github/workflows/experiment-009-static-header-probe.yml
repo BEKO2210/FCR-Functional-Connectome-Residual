@@ -1,0 +1,23 @@
+name: Experiment 009 Static Header Probe
+
+on:
+  push:
+    branches:
+      - experiment/009-functional-preflight
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read public structural CSV header only
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://bossdb-open-data.s3.amazonaws.com/iarpa_microns/minnie/minnie65/nucleus_detection/nucleus_detection_v0.csv"
+          curl --fail --silent --show-error --location --range 0-2047 "$url" \
+            | head -n 1 \
+            | cut -c 1-500

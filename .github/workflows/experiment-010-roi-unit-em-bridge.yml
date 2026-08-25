@@ -8,6 +8,7 @@ on:
       - "src/fcr/data/microns_roi_unit_bridge.py"
       - "experiments/010_microns_roi_unit_bridge.py"
       - "tests/test_microns_roi_unit_bridge.py"
+      - "pyproject.toml"
   push:
     branches: [main]
     paths:
@@ -15,6 +16,7 @@ on:
       - "src/fcr/data/microns_roi_unit_bridge.py"
       - "experiments/010_microns_roi_unit_bridge.py"
       - "tests/test_microns_roi_unit_bridge.py"
+      - "pyproject.toml"
 
 permissions:
   contents: read

@@ -1,0 +1,340 @@
+name: FCR Experiment 010 ROI Unit EM Bridge
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/experiment-010-roi-unit-em-bridge.yml"
+      - "src/fcr/data/microns_roi_unit_bridge.py"
+      - "experiments/010_microns_roi_unit_bridge.py"
+      - "tests/test_microns_roi_unit_bridge.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-010-roi-unit-em-bridge.yml"
+      - "src/fcr/data/microns_roi_unit_bridge.py"
+      - "experiments/010_microns_roi_unit_bridge.py"
+      - "tests/test_microns_roi_unit_bridge.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fcr-experiment-010-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Outcome-blind provenance-native identity bridge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install frozen Experiment 010 runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install \
+            "numpy==2.4.4" \
+            "pandas==2.3.3" \
+            "dandi==0.76.8" \
+            "h5py==3.16.0" \
+            "fsspec[http]==2026.7.0" \
+            "pytest==9.1.1" \
+            "ruff==0.16.4"
+          python -m pip install -e . --no-deps
+          python - <<'PY'
+          import sys
+          import fsspec
+          import h5py
+          import numpy
+          import pandas
+
+          expected = {
+              "python": (3, 12),
+              "numpy": "2.4.4",
+              "pandas": "2.3.3",
+              "h5py": "3.16.0",
+              "fsspec": "2026.7.0",
+          }
+          if sys.version_info[:2] != expected["python"]:
+              raise SystemExit(f"unexpected Python runtime: {sys.version}")
+          if numpy.__version__ != expected["numpy"]:
+              raise SystemExit(f"unexpected NumPy: {numpy.__version__}")
+          if pandas.__version__ != expected["pandas"]:
+              raise SystemExit(f"unexpected pandas: {pandas.__version__}")
+          if h5py.__version__ != expected["h5py"]:
+              raise SystemExit(f"unexpected h5py: {h5py.__version__}")
+          if fsspec.__version__ != expected["fsspec"]:
+              raise SystemExit(f"unexpected fsspec: {fsspec.__version__}")
+          PY
+
+      - name: Lint and run Experiment 010 boundary tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruff check \
+            src/fcr/data/microns_roi_unit_bridge.py \
+            experiments/010_microns_roi_unit_bridge.py \
+            tests/test_microns_roi_unit_bridge.py
+          pytest -q tests/test_microns_roi_unit_bridge.py
+
+      - name: Run frozen token-free identity preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/010_microns_roi_unit_bridge.py \
+            --output results/experiment_010_stage_a.json \
+            --cohort-output results/experiment_010_identity_cohort.csv
+
+      - name: Enforce Experiment 010 identity and information-boundary gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import hashlib
+          import json
+          import re
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_010_stage_a.json").read_text())
+          if report["experiment"] != "010" or report["preregistration_issue"] != 29:
+              raise SystemExit("wrong Experiment 010 provenance")
+          if report["stage"] != "A-outcome-blind-provenance-native-identity":
+              raise SystemExit("wrong Experiment 010 stage")
+          if report["evidence_level"] != "E0-plumbing-only":
+              raise SystemExit("Experiment 010 evidence level changed")
+          if report["functional_values_read"] is not False:
+              raise SystemExit("functional values were read")
+          if report["connectivity_accessed"] is not False:
+              raise SystemExit("connectivity was accessed")
+
+          asset = report["asset"]
+          expected_asset = "sub-17797/sub-17797_ses-9-scan-4_behavior+image+ophys.nwb"
+          if asset["dandiset_id"] != "000402" or asset["version"] != "draft":
+              raise SystemExit("DANDI source changed")
+          if asset["asset_path"] != expected_asset:
+              raise SystemExit("frozen DANDI asset changed")
+          if asset["asset_size_bytes"] <= 0 or not asset["digest"]:
+              raise SystemExit("DANDI asset provenance incomplete")
+
+          nwb = report["nwb"]
+          if nwb["session"] != 9 or nwb["scan_idx"] != 4:
+              raise SystemExit("NWB session/scan contradicts preregistration")
+          if nwb["functional_values_read"] is not False:
+              raise SystemExit("NWB scanner reports functional-value access")
+          if nwb["total_roi_rows"] <= 0:
+              raise SystemExit("no NWB ROI rows discovered")
+          for path in nwb["value_read_paths"]:
+              allowed = path == "/session_id" or re.fullmatch(
+                  r"/processing/ophys/ImageSegmentation/PlaneSegmentation[1-9][0-9]*/id",
+                  path,
+              )
+              if not allowed:
+                  raise SystemExit(f"forbidden NWB value read: {path}")
+
+          scanunit = report["scanunit"]
+          expected_commit = "86268039695669a216b0a1959c9812b5e94c2eb5"
+          expected_blob = "0e960c44695f79881296322a1bdb972dcae755ee"
+          if scanunit["commit"] != expected_commit or scanunit["git_blob_sha1"] != expected_blob:
+              raise SystemExit("ScanUnit immutable provenance changed")
+          if scanunit["size_bytes"] != 14870416 or not scanunit["sha256"]:
+              raise SystemExit("ScanUnit byte provenance invalid")
+          required_scanunit = {"session", "scan_idx", "unit_id", "field", "mask_id"}
+          if not required_scanunit.issubset(set(scanunit["columns"])):
+              raise SystemExit("ScanUnit required schema missing")
+          if scanunit["conflicting_target_keys"] != 0:
+              raise SystemExit("ScanUnit target identity conflicts exist")
+          if scanunit["exact_match_roi_rows"] + scanunit["unmapped_roi_rows"] != nwb["total_roi_rows"]:
+              raise SystemExit("ScanUnit coverage accounting mismatch")
+          if scanunit["exact_match_roi_rows"] <= 0:
+              raise SystemExit("no NWB ROI resolved through ScanUnit")
+
+          release = report["release_coregistration"]
+          expected_release_url = (
+              "https://bossdb-open-data.s3.amazonaws.com/iarpa_microns/minnie/"
+              "functional_coregistration/func_unit_em_match_release.csv"
+          )
+          expected_schema = [
+              "id",
+              "valid",
+              "pt_position_x",
+              "pt_position_y",
+              "pt_position_z",
+              "pt_supervoxel_id",
+              "pt_root_id",
+              "session",
+              "scan_idx",
+              "unit_id",
+          ]
+          if release["url"] != expected_release_url:
+              raise SystemExit("v117 functional coregistration source changed")
+          if release["schema"] != expected_schema:
+              raise SystemExit("v117 functional coregistration schema changed")
+          if release["size_bytes"] <= 0 or not release["sha256"] or release["source_rows"] <= 0:
+              raise SystemExit("v117 release provenance incomplete")
+          accounted = (
+              release["exact_release_match_roi_rows"]
+              + release["unmatched_release_roi_rows"]
+              + release["ambiguous_release_roi_rows"]
+          )
+          if accounted != scanunit["exact_match_roi_rows"]:
+              raise SystemExit("release-coreg ROI accounting mismatch")
+
+          cohort = report["cohort"]
+          if cohort["coreg_source"] != "release-func-unit-em-match-v117":
+              raise SystemExit("unexpected primary coregistration source")
+          expected_rows = (
+              release["exact_release_match_roi_rows"]
+              - cohort["roi_rows_excluded_for_duplicate_root"]
+          )
+          if cohort["rows"] != expected_rows:
+              raise SystemExit("one-to-one cohort accounting mismatch")
+          if cohort["rows"] <= 0 or not cohort["manifest_sha256"]:
+              raise SystemExit("no non-empty one-to-one identity cohort frozen")
+
+          cohort_path = Path("results/experiment_010_identity_cohort.csv")
+          if not cohort_path.exists():
+              raise SystemExit("Experiment 010 cohort manifest missing")
+          raw = cohort_path.read_bytes()
+          if hashlib.sha256(raw).hexdigest() != cohort["manifest_sha256"]:
+              raise SystemExit("cohort manifest hash mismatch")
+          with cohort_path.open(newline="", encoding="utf-8") as handle:
+              reader = csv.DictReader(handle)
+              expected_fields = [
+                  "asset_path",
+                  "plane",
+                  "roi_id",
+                  "mask_id",
+                  "session",
+                  "scan_idx",
+                  "field",
+                  "unit_id",
+                  "v117_pt_root_id",
+                  "pt_position_x",
+                  "pt_position_y",
+                  "pt_position_z",
+                  "coreg_source",
+              ]
+              if reader.fieldnames != expected_fields:
+                  raise SystemExit("cohort manifest schema changed")
+              rows = list(reader)
+          if len(rows) != cohort["rows"]:
+              raise SystemExit("cohort manifest row count mismatch")
+          roots = [int(row["v117_pt_root_id"]) for row in rows]
+          if len(roots) != len(set(roots)):
+              raise SystemExit("primary cohort is not one ROI per structural root")
+          for row in rows:
+              if row["asset_path"] != expected_asset:
+                  raise SystemExit("manifest asset changed")
+              if int(row["session"]) != 9 or int(row["scan_idx"]) != 4:
+                  raise SystemExit("manifest session/scan changed")
+              if int(row["roi_id"]) != int(row["mask_id"]):
+                  raise SystemExit("ROI id is not the frozen mask_id")
+              if int(row["v117_pt_root_id"]) <= 0:
+                  raise SystemExit("nonpositive structural root in manifest")
+              if row["coreg_source"] != "release-func-unit-em-match-v117":
+                  raise SystemExit("manifest coreg source changed")
+
+          print("Experiment 010 Stage A provenance-native identity gate passed.")
+          PY
+
+      - name: Build Experiment 010 audit summary
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_010_stage_a.json").read_text())
+          asset = report["asset"]
+          nwb = report["nwb"]
+          scanunit = report["scanunit"]
+          release = report["release_coregistration"]
+          cohort = report["cohort"]
+          lines = [
+              "## Experiment 010 Stage A — provenance-native MICrONS identity bridge",
+              "",
+              "**No calcium/stimulus response, connectivity, or FCR outcome values were read.**",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Frozen DANDI asset: `{asset['asset_path']}`",
+              f"- Total NWB ROI rows: `{nwb['total_roi_rows']}`",
+              f"- ScanUnit exact ROI→unit matches: `{scanunit['exact_match_roi_rows']}`",
+              f"- ScanUnit unmapped ROIs: `{scanunit['unmapped_roi_rows']}`",
+              f"- v117 release exact unit→EM matches: `{release['exact_release_match_roi_rows']}`",
+              f"- v117 release unmatched ROIs: `{release['unmatched_release_roi_rows']}`",
+              f"- v117 release ambiguous ROIs: `{release['ambiguous_release_roi_rows']}`",
+              f"- Duplicate structural roots excluded: `{cohort['duplicate_structural_roots']}`",
+              f"- ROI rows excluded for duplicate root: `{cohort['roi_rows_excluded_for_duplicate_root']}`",
+              f"- Final one-to-one cohort rows: `{cohort['rows']}`",
+              f"- Cohort manifest SHA-256: `{cohort['manifest_sha256']}`",
+              f"- ScanUnit SHA-256: `{scanunit['sha256']}`",
+              f"- v117 release SHA-256: `{release['sha256']}`",
+              "",
+              "This is E0 identity plumbing only. It does not authorize or constitute a functional-fidelity result.",
+          ]
+          text = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(text, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
+              handle.write(text)
+          print(text)
+          PY
+
+      - name: Upload Experiment 010 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-010-stage-a-${{ github.run_id }}
+          path: |
+            results/experiment_010_stage_a.json
+            results/experiment_010_identity_cohort.csv
+            run-comment.md
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 6
+
+  publish:
+    name: Publish merged Experiment 010 audit
+    needs: preflight
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.preflight.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Download successful Stage A artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fcr-experiment-010-stage-a-${{ github.run_id }}
+
+      - name: Publish audit to Issue 29
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 29,
+              body: fs.readFileSync('run-comment.md', 'utf8'),
+            });

@@ -32,7 +32,6 @@ def _gzip_rows(columns: list[str], records: list[dict[str, object]]) -> bytes:
 def _record(**overrides: object) -> dict[str, object]:
     record: dict[str, object] = {
         "id": 1,
-        "valid": "t",
         "pt_position_x": 342768,
         "pt_position_y": 110096,
         "pt_position_z": 16982,
@@ -49,7 +48,6 @@ def _record(**overrides: object) -> dict[str, object]:
 def test_header_sidecar_order_controls_data_mapping() -> None:
     columns = [
         "id",
-        "valid",
         "pt_position_x",
         "pt_position_y",
         "pt_position_z",
@@ -65,6 +63,7 @@ def test_header_sidecar_order_controls_data_mapping() -> None:
     by_unit, report = parse_v343_coregistration(data, header)
 
     assert report["schema"] == columns
+    assert report["valid_field_present"] is False
     assert report["source_rows"] == 1
     assert report["target_session_scan_rows"] == 1
     assert by_unit[5443] == {(864691135771728459, 342768, 110096, 16982)}
@@ -89,7 +88,13 @@ def test_header_rejects_missing_field() -> None:
         parse_v343_header(_header_bytes(columns))
 
 
-def test_header_rejects_extra_field() -> None:
+def test_header_rejects_valid_as_extra_field() -> None:
+    columns = sorted(EXPECTED_FIELDS | {"valid"})
+    with pytest.raises(RuntimeError, match="extra=.*valid"):
+        parse_v343_header(_header_bytes(columns))
+
+
+def test_header_rejects_other_extra_field() -> None:
     columns = sorted(EXPECTED_FIELDS) + ["unexpected"]
     with pytest.raises(RuntimeError, match="field set"):
         parse_v343_header(_header_bytes(columns))
@@ -107,14 +112,6 @@ def test_data_rejects_row_width_mismatch() -> None:
     header = _header_bytes(columns)
     data = gzip.compress(b"1,2,3\n")
     with pytest.raises(RuntimeError, match="row width mismatch"):
-        parse_v343_coregistration(data, header)
-
-
-def test_target_invalid_row_is_hard_stop() -> None:
-    columns = sorted(EXPECTED_FIELDS)
-    header = _header_bytes(columns)
-    data = _gzip_rows(columns, [_record(valid="f")])
-    with pytest.raises(RuntimeError, match="marked invalid"):
         parse_v343_coregistration(data, header)
 
 

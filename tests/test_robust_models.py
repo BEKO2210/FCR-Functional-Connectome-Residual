@@ -41,7 +41,10 @@ def _synthetic_sample(*, rare: bool = False) -> ConnectomeSample:
 
 
 def _objective_is_monotone(history: list[float]) -> bool:
-    return all(current <= previous for previous, current in zip(history, history[1:]))
+    return all(
+        current <= previous
+        for previous, current in zip(history, history[1:], strict=False)
+    )
 
 
 def test_damped_solver_is_deterministic_and_monotone() -> None:

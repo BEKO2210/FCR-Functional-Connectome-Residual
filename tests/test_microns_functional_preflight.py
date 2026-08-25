@@ -6,6 +6,7 @@ import pytest
 from fcr.data.microns_functional_preflight import (
     COREG_SOURCE,
     FROZEN_ASSET_PATH,
+    STATIC_NUCLEUS_COLUMNS,
     _read_allowed_value,
     cohort_csv_bytes,
     decode_ragged_nucleus_ids,
@@ -99,7 +100,7 @@ def test_cohort_manifest_is_deterministic() -> None:
     assert cohort_csv_bytes(rows) == cohort_csv_bytes(list(reversed(rows)))
 
 
-def test_static_nucleus_table_requires_exact_unique_matches() -> None:
+def test_static_nucleus_table_requires_headerless_exact_unique_matches() -> None:
     candidate_rows = [
         {
             "asset_path": "asset",
@@ -117,20 +118,50 @@ def test_static_nucleus_table_requires_exact_unique_matches() -> None:
         },
     ]
     raw = (
-        b"id,valid,pt_root_id,volume\n"
-        b"101,t,864691135737000001,100.0\n"
-        b"102,t,864691135737000002,101.0\n"
-        b"103,t,864691135737000003,102.0\n"
+        b"101,t,111,864691135737000001,1,2,3,100.0\n"
+        b"102,t,112,864691135737000002,4,5,6,101.0\n"
+        b"103,t,113,864691135737000003,7,8,9,102.0\n"
     )
 
     rows, report = validate_static_nucleus_table(raw, candidate_rows)
 
     assert report["validation_ok"] is True
     assert report["matched_unique_nucleus_ids"] == 2
+    assert report["column_order"] == list(STATIC_NUCLEUS_COLUMNS)
     assert [row["v117_pt_root_id"] for row in rows] == [
         864691135737000001,
         864691135737000003,
     ]
+
+
+def test_static_nucleus_table_excludes_zero_root_without_guessing() -> None:
+    candidate_rows = [
+        {
+            "asset_path": "asset",
+            "plane": "PlaneSegmentation2",
+            "roi_id": "7",
+            "nucleus_id": 101,
+            "coreg_source": COREG_SOURCE,
+        },
+        {
+            "asset_path": "asset",
+            "plane": "PlaneSegmentation4",
+            "roi_id": "8",
+            "nucleus_id": 103,
+            "coreg_source": COREG_SOURCE,
+        },
+    ]
+    raw = (
+        b"101,t,0,0,1,2,3,100.0\n"
+        b"103,t,113,864691135737000003,7,8,9,102.0\n"
+    )
+
+    rows, report = validate_static_nucleus_table(raw, candidate_rows)
+
+    assert report["validation_ok"] is True
+    assert report["candidate_ids_without_positive_v117_root"] == 1
+    assert report["roi_rows_excluded_without_positive_v117_root"] == 1
+    assert [row["nucleus_id"] for row in rows] == [103]
 
 
 def test_scan_reads_coregistration_but_not_functional_values() -> None:

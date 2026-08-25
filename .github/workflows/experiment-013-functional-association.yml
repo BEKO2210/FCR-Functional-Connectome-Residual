@@ -1,0 +1,187 @@
+name: FCR Experiment 013 Functional Association
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-013-functional-association.yml"
+      - "src/fcr/experiment_013.py"
+      - "experiments/013_residual_functional_association.py"
+      - "tests/test_experiment_013.py"
+      - "src/fcr/nested_cv.py"
+      - "src/fcr/advanced_models.py"
+      - "src/fcr/data/microns_public_l23.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-013-functional-association.yml"
+      - "src/fcr/experiment_013.py"
+      - "experiments/013_residual_functional_association.py"
+      - "tests/test_experiment_013.py"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: fcr-experiment-013-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  experiment-013:
+    name: Held-out residual vs orientation tuning
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install frozen runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy==2.5.2" "pandas==3.0.5"
+          python -m pip install -e .
+
+      - name: Lint and run Experiment 013 boundary tests
+        run: |
+          ruff check src/fcr/experiment_013.py experiments/013_residual_functional_association.py tests/test_experiment_013.py
+          pytest -q tests/test_experiment_013.py
+
+      - name: Download frozen MICrONS inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data/experiment013
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/record/6363348/files/211019_vignette_functional_analysis_data.tgz" \
+            -o data/experiment013/functional.tgz
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_valence_v185.csv?download=1" \
+            -o data/experiment013/soma.csv
+          curl --fail --location --retry 5 --retry-all-errors \
+            "https://zenodo.org/records/7510511/files/soma_subgraph_synapses_spines_v185.csv?download=1" \
+            -o data/experiment013/synapses.csv
+          printf '%s  %s\n' \
+            'bcb0d4f678909fbd481ac0b01242ae5c' 'data/experiment013/functional.tgz' \
+            'b7c349b1ecbdad46185bb98d88b96d20' 'data/experiment013/soma.csv' \
+            '5bbb8ff59dcad4ccea6d46930920cd04' 'data/experiment013/synapses.csv' \
+            > checksums.md5
+          md5sum --check checksums.md5
+
+      - name: Run preregistered Experiment 013
+        run: |
+          mkdir -p results
+          python experiments/013_residual_functional_association.py \
+            --functional-archive data/experiment013/functional.tgz \
+            --soma data/experiment013/soma.csv \
+            --synapses data/experiment013/synapses.csv \
+            --output results/experiment_013.json \
+            --edges results/experiment_013_edges.csv
+
+      - name: Enforce Experiment 013 frozen gate
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          r = json.loads(Path('results/experiment_013.json').read_text())
+          if r['experiment'] != '013' or r['preregistration_issue'] != 35:
+              raise SystemExit('wrong Experiment 013 provenance')
+          if r['structural_source']['node_count'] != 334:
+              raise SystemExit('unexpected structural node count')
+          if r['eligible_edge_count'] < 30 or len(r['eligible_folds']) < 3:
+              raise SystemExit('Experiment 013 adequacy gate failed')
+          if r['runtime']['python'].split('.')[:2] != ['3', '12']:
+              raise SystemExit('wrong Python runtime')
+          if r['runtime']['numpy'] != '2.5.2' or r['runtime']['pandas'] != '3.0.5':
+              raise SystemExit('wrong frozen numerical runtime')
+          if r['ease_trace_opened'] or r['stimulus_opened']:
+              raise SystemExit('forbidden functional source was opened')
+          if r['structural_training_used_functional_values']:
+              raise SystemExit('functional leakage into structural training')
+          if r['structural_ranking_used_functional_values']:
+              raise SystemExit('functional leakage into residual ranking')
+          primary = r['primary']
+          if primary['primary_min_improvement'] != 0.05 or primary['primary_max_p'] != 0.05:
+              raise SystemExit('primary threshold changed')
+          if primary['high_edge_count'] != primary['low_edge_count']:
+              raise SystemExit('unequal high/low edge budget')
+          print('Experiment 013 frozen gate passed.')
+          PY
+
+      - name: Build Experiment 013 audit summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          r = json.loads(Path('results/experiment_013.json').read_text())
+          p = r['primary']
+          lines = [
+              '## Experiment 013 — first residual→function association result',
+              '',
+              '**Evidence:** `E1-functional-association-pilot`.',
+              '',
+              f"- GitHub run: `{os.environ['GITHUB_RUN_ID']}`",
+              f"- Commit: `{os.environ['GITHUB_SHA']}`",
+              f"- Functional EASETuning rows: `{r['functional_row_count']}`",
+              f"- Functional IDs inside frozen 334-node graph: `{r['functional_ids_in_structural_graph']}`",
+              f"- Eligible held-out observed directed edges: `{r['eligible_edge_count']}`",
+              f"- Eligible outer folds: `{r['eligible_folds']}`",
+              f"- Selected spatial L2 by fold: `{r['selected_spatial_l2_by_fold']}`",
+              '',
+              '### Frozen primary result',
+              f"- High-residual edge count: `{p['high_edge_count']}`",
+              f"- High-residual mean |Δ OSi|: `{p['high_mean_osi_difference']:.6f}`",
+              f"- Distance/same-scan matched random median |Δ OSi|: `{p['random_median_osi_difference']:.6f}`",
+              f"- Relative improvement: `{100*p['relative_improvement_vs_random_median']:.3f}%`",
+              f"- One-sided empirical p: `{p['empirical_one_sided_p']:.6f}`",
+              f"- Frozen requirement: `>=5% improvement` and `p<=0.05`",
+              f"- **Criterion met: `{p['primary_criterion_met']}`**",
+              '',
+              '### Secondary descriptive checks',
+              f"- Low-residual mean |Δ OSi|: `{p['low_mean_osi_difference']:.6f}`",
+              f"- High tuned-status concordance: `{p['high_tuned_status_concordance']:.6f}`",
+              f"- Random median tuned-status concordance: `{p['random_median_tuned_status_concordance']:.6f}`",
+              '',
+              'EASETrace and Stimulus were not opened. This is association evidence only, not a causal or functional-preservation proof.',
+          ]
+          text = '\n'.join(lines) + '\n'
+          Path('run-comment.md').write_text(text, encoding='utf-8')
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8') as out:
+              out.write(text)
+          print(text)
+          PY
+
+      - name: Publish merged Experiment 013 result
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 35,
+              body: fs.readFileSync('run-comment.md', 'utf8'),
+            });
+
+      - name: Upload Experiment 013 audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-013-${{ github.run_id }}
+          path: |
+            results/experiment_013.json
+            results/experiment_013_edges.csv
+            run-comment.md
+            checksums.md5
+          if-no-files-found: error
+          retention-days: 90

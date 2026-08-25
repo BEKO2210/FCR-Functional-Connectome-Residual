@@ -1,0 +1,273 @@
+name: FCR Experiment 008 Controlled H01 Rerun
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/experiment-008-h01-controlled-rerun.yml"
+      - "src/fcr/experiment_008.py"
+      - "experiments/008_h01_controlled_rerun.py"
+      - "tests/test_experiment_008.py"
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+concurrency:
+  group: fcr-experiment-008-h01-controlled-rerun
+  cancel-in-progress: false
+
+jobs:
+  controlled-rerun:
+    name: Verify frozen inputs, run validated solver, report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install frozen numerical runtime and FCR
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install "numpy==2.5.2" "pandas==3.0.5"
+          python -m pip install -e . --no-deps
+          python - <<'PY'
+          import sys
+          import numpy
+          import pandas
+          if sys.version_info[:2] != (3, 12):
+              raise SystemExit(f"unexpected Python runtime: {sys.version}")
+          if numpy.__version__ != "2.5.2":
+              raise SystemExit(f"unexpected NumPy version: {numpy.__version__}")
+          if pandas.__version__ != "3.0.5":
+              raise SystemExit(f"unexpected pandas version: {pandas.__version__}")
+          print(sys.version)
+          print("numpy", numpy.__version__)
+          print("pandas", pandas.__version__)
+          PY
+
+      - name: Verify frozen Experiment 005 evaluation core
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_blob() {
+            path="$1"
+            expected="$2"
+            observed="$(git hash-object "$path")"
+            if [ "$observed" != "$expected" ]; then
+              echo "Frozen implementation mismatch for $path: $observed != $expected" >&2
+              exit 1
+            fi
+            echo "$path $observed"
+          }
+          check_blob src/fcr/nested_cv.py 7eea99f54a3e3fd964e7e00081daf3643270f7e7
+          check_blob src/fcr/advanced_models.py 26f235cae5e3707622a5d26ddbd620fdcb8a7b6b
+          check_blob src/fcr/metrics.py a0fa7f6fbdcbe5266449050c344887fc1d59e6e9
+          check_blob src/fcr/models.py 8377b36e7bd7d34e83180c3ff2b3975df0c4cc45
+          check_blob src/fcr/splits.py 09ad5f79a3fdf7800d7742173bc0206834e0bfad
+          check_blob src/fcr/schema.py f4ac9c69a2af1526dba3b5701cebe0e2c1552987
+
+      - name: Verify frozen H01 adapter and confirmation logic
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object src/fcr/data/h01_experiment_006.py)" = "bd3e9517a576dd9f8880416fbb4334abf3f6f5c4"
+          test "$(git hash-object src/fcr/experiment_006.py)" = "3349240580b2c39daeccc50f5c454925e7b8db65"
+          test "$(git hash-object src/fcr/data/h01_edges.py)" = "7ef77f3dd914750366ab0771b678c193cf58eba7"
+
+      - name: Verify frozen Experiment 007 validated solver
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object src/fcr/robust_models.py)" = "b4ca4d62804f43e0aa272ceac773a10fb36f440d"
+          test "$(git hash-object src/fcr/experiment_007.py)" = "9ee4b5cac0dc118263a46198e97584359d5f665f"
+
+      - name: Download immutable Experiment 006 Stage B1 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: h01-experiment-006-stage-b1-32791426287
+          path: stage_b1
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 32791426287
+
+      - name: Run Experiment 008 controlled H01 rerun
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p results
+          python experiments/008_h01_controlled_rerun.py \
+            --nodes-csv stage_b1/work/primary_nodes.csv \
+            --candidate-table stage_b1/results/h01_experiment_006_candidates.csv.gz \
+            --sparse-edges stage_b1/results/h01_experiment_006_sparse_edges.csv.gz \
+            --stage-b1-audit stage_b1/results/h01_stage_b1_extraction.json \
+            --output results/experiment_008_h01_controlled_rerun.json
+
+      - name: Enforce preregistered Experiment 008 invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_008_h01_controlled_rerun.json").read_text())
+          if report["experiment"] != "008" or report["preregistration_issue"] != 24:
+              raise SystemExit("wrong Experiment 008 provenance")
+          if report["solver_repair"]["experiment"] != "007":
+              raise SystemExit("wrong solver-repair provenance")
+          if report["solver_repair"]["validated_main"] != "33ffdd0f957d5c17d8047b6e4cba4b92a492154c":
+              raise SystemExit("wrong validated Experiment 007 main commit")
+          if report["solver_repair"]["microns_equivalence_run"] != 32797220405:
+              raise SystemExit("wrong Experiment 007 equivalence run")
+          if report["solver_repair"]["h01_accessed_during_solver_validation"] is not False:
+              raise SystemExit("Experiment 007 solver validation provenance is invalid")
+
+          if report["graph"]["nodes"] != 1500:
+              raise SystemExit("wrong frozen node count")
+          if report["graph"]["directed_candidate_pairs"] != 2248500:
+              raise SystemExit("candidate graph is not complete")
+          if report["graph"]["connected_pairs"] != 4052:
+              raise SystemExit("connected-pair count changed from Stage B1")
+          if report["graph"]["observed_synapses"] != 6190:
+              raise SystemExit("synapse count changed from Stage B1")
+
+          expected_hashes = {
+              "primary_nodes.csv": "3c954b9206f8e14859fb789b11cb008ee2245c3192cfc29793ab13bb231f55f4",
+              "h01_experiment_006_candidates.csv.gz": "97d3bbc4864a8dc21d18cc02dd04d6c1860765f6e1d9cdf796199de54f34ae76",
+              "h01_experiment_006_sparse_edges.csv.gz": "6be7d4fe9259321ac00d5835c59dd98d474f5853cd94b4b72a9bd04c359d724d",
+          }
+          if report["input_sha256"] != expected_hashes:
+              raise SystemExit("Experiment 008 immutable H01 input hash mismatch")
+
+          precheck = report["pre_model_stop_condition_check"]
+          if len(precheck) != 5 or any(row["positive_pairs"] <= 0 for row in precheck):
+              raise SystemExit("pre-model outer-slab stop condition failed")
+
+          evaluation = report["evaluation"]
+          if evaluation["protocol"] != "experiment-005-nested-spatial-cv":
+              raise SystemExit("wrong transferred evaluation protocol")
+          folds = evaluation["folds"]
+          if len(folds) != 5:
+              raise SystemExit("Experiment 008 must contain exactly five outer folds")
+          seen = set()
+          for fold in folds:
+              ids = set(fold["test_node_ids"])
+              if seen & ids:
+                  raise SystemExit("outer test node leakage detected")
+              seen |= ids
+              n = fold["test_node_count"]
+              if fold["test_pairs"] != n * (n - 1):
+                  raise SystemExit("outer fold is not a complete directed non-self graph")
+              if fold["test_positive_pairs"] <= 0:
+                  raise SystemExit("outer fold contains no positives")
+              if set(fold["predictive"]) != {"global", "distance", "relative", "spatial"}:
+                  raise SystemExit("unexpected predictive model set")
+              for name, model in fold["predictive"].items():
+                  if name != "global" and not model["converged"]:
+                      raise SystemExit(f"validated solver did not converge for {name}")
+          if len(seen) != 1500:
+              raise SystemExit("outer test slabs do not cover all frozen nodes exactly once")
+
+          primary = report["independent_confirmation"]
+          if primary["primary_family"] != "spatial":
+              raise SystemExit("primary family changed from spatial")
+          if primary["threshold_reduction"] != 0.05 or primary["threshold_wins"] != 4:
+              raise SystemExit("preregistered H01 confirmation threshold changed")
+          # criterion_met may be True or False; either is a valid scientific outcome.
+          print("Experiment 008 frozen invariants passed.")
+          PY
+
+      - name: Build Experiment 008 audit summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(Path("results/experiment_008_h01_controlled_rerun.json").read_text())
+          ev = report["evaluation"]
+          primary = report["independent_confirmation"]
+          aggregate = ev["aggregate"]
+          slab_positives = [row["positive_pairs"] for row in report["pre_model_stop_condition_check"]]
+
+          lines = [
+              "## Experiment 008 controlled H01 result",
+              "",
+              "**Evidence:** `E2-independent-cross-dataset-human-cortex-controlled-rerun`.",
+              "",
+              f"- GitHub run: `{os.environ.get('GITHUB_RUN_ID')}`",
+              f"- Commit: `{os.environ.get('GITHUB_SHA')}`",
+              f"- Frozen nodes: `{report['graph']['nodes']}`",
+              f"- Complete directed non-self candidates: `{report['graph']['directed_candidate_pairs']}`",
+              f"- Connected pairs: `{report['graph']['connected_pairs']}`",
+              f"- Observed selected synapses: `{report['graph']['observed_synapses']}`",
+              f"- Pre-model positive pairs by outer X slab: `{slab_positives}`",
+              "- Solver: frozen Experiment 007 `DampedGeometryLogisticModel` validated without H01 access",
+              "",
+              "### Frozen primary confirmation: spatial only",
+              f"- Spatial residual reduction vs global: `{100 * primary['residual_reduction_vs_global']:.3f}%`",
+              f"- Spatial outer-fold wins vs global: `{primary['wins_vs_global']}/5`",
+              "- Required: `>=5%` and `>=4/5`",
+              f"- **Independent confirmation criterion met: `{primary['criterion_met']}`**",
+              f"- Spatial two-part bits beat global: `{primary['spatial_two_part_better_than_global']}`",
+              "",
+              "| Model | Aggregate residual bits | Aggregate two-part bits | Reduction vs global | Wins |",
+              "|---|---:|---:|---:|---:|",
+          ]
+          for name in ("global", "distance", "relative", "spatial"):
+              row = aggregate[name]
+              lines.append(
+                  f"| {name} | {row['residual_bits']:.3f} | {row['two_part_bits']:.3f} | "
+                  f"{100 * row['residual_reduction_vs_global']:.3f}% | {row['wins_vs_global']}/5 |"
+              )
+          lines.extend(
+              [
+                  "",
+                  "This is the preregistered controlled completion of the previously inconclusive Experiment 006 H01 transfer test. No H01 nodes, edges, folds, features, L2 grids, accounting rules or confirmation thresholds were changed; only the separately validated Experiment 007 numerical solver was substituted.",
+                  "",
+                  "A positive result is structural cross-dataset evidence only. It does not establish functional equivalence, memory or identity preservation, consciousness, whole-brain emulation, or historical novelty.",
+              ]
+          )
+          comment = "\n".join(lines) + "\n"
+          Path("run-comment.md").write_text(comment, encoding="utf-8")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as out:
+              out.write(comment)
+          print(comment)
+          PY
+
+      - name: Publish Experiment 008 result to preregistration issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('run-comment.md', 'utf8');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: 24,
+              body,
+            });
+
+      - name: Upload immutable Experiment 008 result artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcr-experiment-008-h01-${{ github.run_id }}
+          path: |
+            results/experiment_008_h01_controlled_rerun.json
+            run-comment.md
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 6

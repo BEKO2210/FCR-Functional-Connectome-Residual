@@ -131,7 +131,9 @@ def test_nwb_scan_rejects_wrong_session_and_nonconforming_plane() -> None:
         scan_nwb_roi_identity(bad_plane)
 
 
-def test_scanunit_is_verified_before_pickle_deserialization(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_scanunit_is_verified_before_pickle_deserialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     frame = pd.DataFrame(
         {"session": [9], "scan_idx": [4], "unit_id": [17], "field": [2], "mask_id": [7]}
     )

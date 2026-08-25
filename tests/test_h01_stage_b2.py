@@ -78,7 +78,11 @@ def test_h01_adapter_rejects_hash_mismatch(tmp_path: Path) -> None:
         )
 
 
-def _complete_sample_with_five_spatial_positives() -> tuple[ConnectomeSample, np.ndarray, np.ndarray]:
+def _complete_sample_with_five_spatial_positives() -> tuple[
+    ConnectomeSample,
+    np.ndarray,
+    np.ndarray,
+]:
     node_ids = np.arange(15, dtype=np.int64)
     coordinates = np.column_stack(
         [node_ids.astype(float), np.zeros(15), np.zeros(15)]

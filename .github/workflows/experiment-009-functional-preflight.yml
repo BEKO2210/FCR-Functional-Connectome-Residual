@@ -81,7 +81,7 @@ jobs:
             --output results/experiment_009_stage_a.json \
             --cohort-output results/experiment_009_coreg_cohort.csv
 
-      - name: Enforce Stage A information boundary and nucleus-ID gate
+      - name: Enforce Stage A exact-position information boundary gate
         shell: bash
         run: |
           set -euo pipefail
@@ -96,9 +96,13 @@ jobs:
           if report["stage"] != "A-outcome-blind-coregistration-preflight":
               raise SystemExit("wrong Experiment 009 stage")
           if report["schema_reconciliation_comment"] != 5404064572:
-              raise SystemExit("wrong Stage A schema reconciliation provenance")
+              raise SystemExit("wrong initial schema reconciliation provenance")
           if report["duplicate_mapping_addendum_comment"] != 5404074984:
-              raise SystemExit("wrong duplicate-mapping rule provenance")
+              raise SystemExit("wrong duplicate-mapping provenance")
+          if report["static_schema_reconciliation_comment"] != 5404134131:
+              raise SystemExit("wrong static table schema provenance")
+          if report["position_join_reconciliation_comment"] != 5404210234:
+              raise SystemExit("wrong exact-position reconciliation provenance")
           if report["functional_values_read"] is not False:
               raise SystemExit("functional values were read during Stage A")
           if report["h01_or_connectivity_accessed"] is not False:
@@ -124,24 +128,26 @@ jobs:
           planes = nwb["plane_segmentations"]
           if not planes:
               raise SystemExit("no PlaneSegmentation tables found")
-          if not any(row.get("nucleus_coregistration", {}).get("present") for row in planes):
-              raise SystemExit("no cave_ids nucleus coregistration found")
+          if not any(row.get("legacy_cave_coregistration", {}).get("present") for row in planes):
+              raise SystemExit("no legacy cave_ids coregistration metadata found")
+          if not any(row.get("position_coregistration", {}).get("position_columns_present") for row in planes):
+              raise SystemExit("no v117 structural point-position coregistration found")
           if not nwb["roi_response_series_metadata_only"]:
               raise SystemExit("no RoiResponseSeries metadata found")
           if not nwb["stimulus_interval_metadata_only"]:
               raise SystemExit("no stimulus interval metadata found")
 
           coreg = nwb["coregistration"]
-          if coreg["canonical_identity"] != "nucleus_id":
-              raise SystemExit("canonical token-free identity is not nucleus_id")
-          if coreg["coreg_source"] != "manual_match_cave_nuclei_id":
-              raise SystemExit("unexpected nucleus coregistration source")
-          if coreg["nucleus_id_precision_safe"] is not True:
-              raise SystemExit("cave_ids are not safe exact nucleus identities")
+          if coreg["canonical_identity"] != "nucleus_detection_v0.id":
+              raise SystemExit("canonical identity is not the static v117 nucleus ID")
+          if coreg["coreg_source"] != "exact-v117-pt-position":
+              raise SystemExit("unexpected canonical coregistration source")
+          if coreg["legacy_cave_id_precision_safe"] is not True:
+              raise SystemExit("legacy cave_ids contain unsafe values")
           if coreg["nwb_pt_root_id_exact_integer_safe"] is not False:
               raise SystemExit("expected frozen asset float pt_root_id diagnostic changed")
           if coreg["pre_static_candidate_rows"] <= 0:
-              raise SystemExit("no unambiguous one-to-one nucleus candidates")
+              raise SystemExit("no exact structural-position candidates")
 
           static = coreg["static_nucleus_validation"]
           expected_static_url = (
@@ -152,10 +158,18 @@ jobs:
               raise SystemExit("static nucleus validation source changed")
           if not static["sha256"] or static["source_rows"] <= 0:
               raise SystemExit("static nucleus table provenance missing")
+          if static["join_key"] != ["pt_position_x", "pt_position_y", "pt_position_z"]:
+              raise SystemExit("static bridge is not using the frozen exact position key")
+          if static["coordinate_space"] != "v117-em-voxels-x4nm-y4nm-z40nm":
+              raise SystemExit("unexpected structural coordinate space")
+          if static["exact_position_join_ok"] is not True:
+              raise SystemExit("exact v117 position join failed")
+          if static["missing_candidate_points"] != 0:
+              raise SystemExit("one or more candidate positions are absent from static v117")
+          if static["nonunique_candidate_points"] != 0:
+              raise SystemExit("one or more candidate positions are nonunique in static v117")
           if static["validation_ok"] is not True:
-              raise SystemExit("stable nucleus IDs did not validate against static table")
-          if static["missing_candidate_ids"] != 0 or static["nonunique_candidate_ids"] != 0:
-              raise SystemExit("static nucleus identity mapping is incomplete or nonunique")
+              raise SystemExit("no valid exact-position structural cohort survived")
 
           if coreg["candidate_rows"] <= 0 or not coreg["candidate_manifest_sha256"]:
               raise SystemExit("no exact token-free structural cohort manifest could be frozen")
@@ -163,16 +177,35 @@ jobs:
           if not cohort_path.exists():
               raise SystemExit("coregistration cohort manifest missing")
           with cohort_path.open(newline="", encoding="utf-8") as handle:
-              rows = list(csv.DictReader(handle))
+              reader = csv.DictReader(handle)
+              expected_fields = [
+                  "asset_path",
+                  "plane",
+                  "roi_id",
+                  "legacy_cave_id",
+                  "pt_position_x",
+                  "pt_position_y",
+                  "pt_position_z",
+                  "nucleus_id",
+                  "v117_pt_root_id",
+                  "coreg_source",
+              ]
+              if reader.fieldnames != expected_fields:
+                  raise SystemExit("cohort manifest schema changed")
+              rows = list(reader)
           if len(rows) != coreg["candidate_rows"]:
               raise SystemExit("cohort manifest row count mismatch")
           if len({row["nucleus_id"] for row in rows}) != len(rows):
               raise SystemExit("canonical cohort is not one nucleus per ROI")
-          if any(row["coreg_source"] != "manual_match_cave_nuclei_id" for row in rows):
+          if any(row["coreg_source"] != "exact-v117-pt-position" for row in rows):
               raise SystemExit("cohort contains unexpected coregistration source")
           if any(int(row["v117_pt_root_id"]) <= 0 for row in rows):
               raise SystemExit("static v117 root provenance is invalid")
-          print("Experiment 009 Stage A stable-nucleus coregistration gate passed.")
+          for row in rows:
+              coords = [int(row[name]) for name in ("pt_position_x", "pt_position_y", "pt_position_z")]
+              if any(value < 0 or value > 2**53 for value in coords):
+                  raise SystemExit("manifest contains invalid exact structural coordinate")
+          print("Experiment 009 Stage A exact-position coregistration gate passed.")
           PY
 
       - name: Build Stage A audit summary
@@ -189,20 +222,22 @@ jobs:
           nwb = report["nwb"]
           coreg = nwb["coregistration"]
           static = coreg["static_nucleus_validation"]
-          matched = [
-              (
-                  p["name"],
-                  p["row_count"],
-                  p.get("nucleus_coregistration", {}).get("rows_single_unique_id", 0),
-                  p.get("nucleus_coregistration", {}).get(
-                      "rows_ambiguous_multiple_ids", 0
-                  ),
-                  p.get("nucleus_coregistration", {}).get("rows_unmatched", 0),
+          plane_rows = []
+          for plane in nwb["plane_segmentations"]:
+              legacy = plane.get("legacy_cave_coregistration", {})
+              position = plane.get("position_coregistration", {})
+              plane_rows.append(
+                  (
+                      plane["name"],
+                      plane["row_count"],
+                      legacy.get("rows_single_unique_id", 0),
+                      legacy.get("rows_ambiguous_multiple_ids", 0),
+                      position.get("rows_exact_complete_position", 0),
+                  )
               )
-              for p in nwb["plane_segmentations"]
-          ]
+
           lines = [
-              "## Experiment 009 Stage A — token-free MICrONS structure/function preflight",
+              "## Experiment 009 Stage A — exact-position MICrONS structure/function preflight",
               "",
               "**No calcium, stimulus movie, trial-response, connectivity, or FCR outcome values were read.**",
               "",
@@ -212,31 +247,35 @@ jobs:
               f"- Frozen asset: `{asset['asset_path']}`",
               f"- Asset bytes: `{asset['asset_size_bytes']}`",
               f"- Asset digest metadata: `{asset['digest']}`",
-              f"- Canonical cross-modal identity: `{coreg['canonical_identity']}`",
-              f"- NWB pt_root_id exact-safe: `{coreg['nwb_pt_root_id_exact_integer_safe']}` (diagnostic only)",
-              f"- Exact one-to-one cohort rows: `{coreg['candidate_rows']}`",
-              f"- Duplicate nucleus identities excluded: `{coreg['duplicate_nucleus_identities']}`",
-              f"- ROI rows excluded for duplicate nucleus: `{coreg['roi_rows_excluded_for_duplicate_nucleus']}`",
+              f"- Canonical identity: `{coreg['canonical_identity']}`",
+              f"- Canonical join: `{coreg['coreg_source']}`",
+              f"- Pre-static exact-position candidates: `{coreg['pre_static_candidate_rows']}`",
+              f"- Exact final one-to-one cohort rows: `{coreg['candidate_rows']}`",
+              f"- Missing static candidate points: `{static['missing_candidate_points']}`",
+              f"- Nonunique static candidate points: `{static['nonunique_candidate_points']}`",
+              f"- Zero-root points excluded: `{static['candidate_points_without_positive_v117_root']}`",
+              f"- Duplicate canonical nuclei excluded: `{static['duplicate_nucleus_identities']}`",
               f"- Candidate manifest SHA-256: `{coreg['candidate_manifest_sha256']}`",
               f"- Static nucleus table SHA-256: `{static['sha256']}`",
-              f"- Static nucleus validation passed: `{static['validation_ok']}`",
+              f"- Exact position validation passed: `{static['validation_ok']}`",
+              f"- NWB pt_root_id exact-safe: `{coreg['nwb_pt_root_id_exact_integer_safe']}` (diagnostic only)",
               f"- RoiResponseSeries discovered (metadata only): `{len(nwb['roi_response_series_metadata_only'])}`",
               f"- Stimulus interval tables discovered (metadata only): `{len(nwb['stimulus_interval_metadata_only'])}`",
               "",
-              "### Plane coregistration metadata",
-              "| Plane | ROI rows | Single nucleus | Ambiguous | Unmatched |",
+              "### Plane structural-coregistration metadata",
+              "| Plane | ROI rows | Single legacy CAVE ID | Ambiguous legacy IDs | Exact position rows |",
               "|---|---:|---:|---:|---:|",
           ]
-          for plane, rows, single, ambiguous, unmatched in matched:
+          for plane, rows, single, ambiguous, exact_position in plane_rows:
               lines.append(
-                  f"| {plane} | {rows} | {single} | {ambiguous} | {unmatched} |"
+                  f"| {plane} | {rows} | {single} | {ambiguous} | {exact_position} |"
               )
           lines.extend(
               [
                   "",
-                  "The NWB float pt_root_id field was intentionally not used as an exact identity. The canonical bridge is the stable nucleus ID from outcome-blind `cave_ids`, validated against the public static MICrONS nucleus table.",
+                  "Legacy `cave_ids` and NWB float `pt_root_id` are diagnostic/provenance only. The canonical token-free bridge is the exact v117 EM-voxel cell-body position joined to the frozen public `nucleus_detection_v0` table.",
                   "",
-                  "This is E0 plumbing only. It freezes a token-free structure↔ROI identity bridge before any functional response value is inspected. It is not evidence for functional fidelity.",
+                  "This is E0 plumbing only. It freezes a structure↔ROI identity bridge before any functional response value is inspected; it is not evidence for functional fidelity.",
               ]
           )
           text = "\n".join(lines) + "\n"

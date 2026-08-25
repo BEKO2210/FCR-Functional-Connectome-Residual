@@ -22,17 +22,22 @@ from fcr.data.microns_roi_unit_bridge import (
     join_units_to_release,
     load_scanunit_dataframe,
     map_rois_to_units,
-    parse_release_coregistration,
+)
+from fcr.data.microns_v343_coreg import (
+    V343_COREG_DATA_URL,
+    V343_COREG_HEADER_URL,
+    V343_RECONCILIATION_COMMENT,
+    parse_v343_coregistration,
 )
 
-SCHEMA_RECONCILIATION_COMMENT = 5404679857
+ASSET_IDENTITY_RECONCILIATION_COMMENT = 5404679857
 
 
 def run_reconciled_preflight(
     output_json: str | Path,
     output_csv: str | Path,
 ) -> dict[str, object]:
-    """Run Experiment 010 with session/scan identity frozen from the DANDI asset path."""
+    """Run the frozen Experiment 010 identity bridge without functional-value reads."""
     try:
         import fsspec
         import h5py
@@ -67,8 +72,10 @@ def run_reconciled_preflight(
     unit_rows, scanunit_join = map_rois_to_units(roi_rows, scanunit)
     scanunit_report.update(scanunit_join)
 
-    release_bytes = _fetch_bytes(RELEASE_COREG_URL)
-    release_by_unit, release_report = parse_release_coregistration(release_bytes)
+    header_bytes = _fetch_bytes(V343_COREG_HEADER_URL)
+    data_bytes = _fetch_bytes(V343_COREG_DATA_URL)
+    release_by_unit, release_report = parse_v343_coregistration(data_bytes, header_bytes)
+    release_report["superseded_headerless_posterity_url"] = RELEASE_COREG_URL
     structural_rows, release_join = join_units_to_release(unit_rows, release_by_unit)
     release_report.update(release_join)
 
@@ -85,7 +92,10 @@ def run_reconciled_preflight(
         "stage": "A-outcome-blind-provenance-native-identity",
         "evidence_level": "E0-plumbing-only",
         "preregistration_issue": PREREGISTRATION_ISSUE,
-        "schema_reconciliation_comment": SCHEMA_RECONCILIATION_COMMENT,
+        "reconciliation_comments": [
+            ASSET_IDENTITY_RECONCILIATION_COMMENT,
+            V343_RECONCILIATION_COMMENT,
+        ],
         "functional_values_read": False,
         "connectivity_accessed": False,
         "asset": asset_report,
